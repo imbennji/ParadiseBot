@@ -34,6 +34,7 @@ const {
 } = require('./src/config');
 const { client } = require('./src/discord/client');
 const { registerCommandsOnStartup, handleChatCommand } = require('./src/discord/commands');
+const { registerLogging } = require('./src/discord/logging');
 const { awardMessageXp } = require('./src/discord/xp');
 const { scheduleAchievementsLoop } = require('./src/loops/achievements');
 const { scheduleOwnedLoop } = require('./src/loops/owned');
@@ -97,6 +98,8 @@ log.info('Config:', JSON.stringify({
   DEBUG_HTTP,
   DEBUG_SQL,
 }));
+
+registerLogging();
 
 client.once(Events.ClientReady, async (c) => {
   log.tag('READY').info(`Logged in as ${c.user.tag}`);

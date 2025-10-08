@@ -47,6 +47,7 @@ const commandBuilders = [
           { name: 'leaderboard',            value: CHANNEL_KINDS.LEADERBOARD },
           { name: 'steam_game_sales',       value: CHANNEL_KINDS.SALES },
           { name: 'xp_levelups',            value: CHANNEL_KINDS.XP },
+          { name: 'logging',                value: CHANNEL_KINDS.LOGGING },
         )
     )
     .addChannelOption(opt =>
