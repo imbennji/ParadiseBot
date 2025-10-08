@@ -187,6 +187,18 @@ const commandBuilders = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
+    .setName('clearchat')
+    .setDescription('Push blank lines into the chat to clear the view')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages)
+    .setDMPermission(false)
+    .addIntegerOption(opt =>
+      opt.setName('lines')
+        .setDescription('How many blank lines to post (max 200)')
+        .setMinValue(1)
+        .setMaxValue(200)
+        .setRequired(true)
+    ),
+  new SlashCommandBuilder()
     .setName('warn')
     .setDescription('Send a warning DM to a member')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages)
@@ -531,6 +543,49 @@ async function handlePurge(interaction) {
   await interaction.editReply(`🧹 Deleted ${deleted.size} message(s)${scope}.`);
 }
 
+async function handleClearChat(interaction) {
+  if (!interaction.guild) {
+    return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
+  }
+
+  const channel = interaction.channel;
+  if (!channel || channel.type !== ChannelType.GuildText) {
+    return interaction.reply({ content: 'This command can only be used in text channels.', ephemeral: true });
+  }
+
+  const perms = hasBotPerms(channel);
+  if (!perms.ok) {
+    return interaction.reply({ content: `I’m missing permissions in ${channel}: **ViewChannel**, **SendMessages**, **EmbedLinks**.`, ephemeral: true });
+  }
+
+  const requestedLines = interaction.options.getInteger('lines', true);
+  const lines = Math.min(Math.max(requestedLines, 1), 200);
+  const limited = lines !== requestedLines;
+
+  await interaction.deferReply({ ephemeral: true });
+
+  let remaining = lines;
+  const chunkSize = 50;
+  const blankLine = '\u200B';
+
+  try {
+    while (remaining > 0) {
+      const portion = Math.min(remaining, chunkSize);
+      const content = Array.from({ length: portion }, () => blankLine).join('\n');
+      await channel.send({ content });
+      remaining -= portion;
+    }
+  } catch (err) {
+    log.tag('CMD:clearchat').warn(`guild=${interaction.guildId} channel=${channel.id} failed:`, err?.stack || err);
+    return interaction.editReply('I could not post the clearing message. Please try again later.');
+  }
+
+  log.tag('CMD:clearchat').info(`guild=${interaction.guildId} moderator=${interaction.user.id} channel=${channel.id} lines=${lines}`);
+
+  const suffix = limited ? ' (Limited to 200 lines.)' : '';
+  await interaction.editReply(`🧼 Posted ${lines} blank line(s) to clear the chat.${suffix}`);
+}
+
 async function handleWarn(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -591,6 +646,7 @@ async function handleChatCommand(interaction) {
     case 'ban':          await handleBan(interaction);         break;
     case 'timeout':      await handleTimeout(interaction);     break;
     case 'purge':        await handlePurge(interaction);       break;
+    case 'clearchat':    await handleClearChat(interaction);   break;
     case 'warn':         await handleWarn(interaction);        break;
   }
 }
