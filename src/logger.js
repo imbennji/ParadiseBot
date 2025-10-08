@@ -7,7 +7,12 @@ const DEBUG_SQL  = !!Number(process.env.DEBUG_SQL  || 0);
 const redact = (v) => {
   if (!v) return v;
   let s = String(v);
-  const secrets = [process.env.DISCORD_TOKEN, process.env.STEAM_API_KEY, process.env.DB_PASS];
+  const secrets = [
+    process.env.DISCORD_TOKEN,
+    process.env.STEAM_API_KEY,
+    process.env.DB_PASS,
+    process.env.GITHUB_TOKEN,
+  ];
   for (const sec of secrets) if (sec) s = s.split(sec).join('••••••••');
   return s;
 };
