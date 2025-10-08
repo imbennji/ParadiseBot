@@ -73,6 +73,7 @@ const SALES_MAX_PAGES_CACHE = Math.max(50, parseInt(process.env.SALES_MAX_PAGES_
 const SALES_PREWARM_SPACING_MS = Math.max(250, parseInt(process.env.SALES_PREWARM_SPACING_MS || '800', 10));
 const SALES_EXTEND_TTL_ON_HIT = (process.env.SALES_EXTEND_TTL_ON_HIT ?? 'true').toLowerCase() !== 'false';
 const SALES_SORT_BY = process.env.SALES_SORT_BY || 'Discount_DESC';
+const SALES_NAV_COOLDOWN_MS = Math.max(0, parseInt(process.env.SALES_NAV_COOLDOWN_MS || '750', 10));
 
 const SALES_FULL_WARMER_ENABLED = (process.env.SALES_FULL_WARMER_ENABLED ?? 'true').toLowerCase() !== 'false';
 const SALES_FULL_WARMER_DELAY_MS = Math.max(0, parseInt(process.env.SALES_FULL_WARMER_DELAY_MS || '15000', 10));
@@ -124,6 +125,7 @@ module.exports = {
   SALES_PREWARM_SPACING_MS,
   SALES_EXTEND_TTL_ON_HIT,
   SALES_SORT_BY,
+  SALES_NAV_COOLDOWN_MS,
   SALES_FULL_WARMER_ENABLED,
   SALES_FULL_WARMER_DELAY_MS,
   SALES_FULL_WARMER_SPACING_MS,

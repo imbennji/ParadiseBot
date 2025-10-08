@@ -16,6 +16,7 @@ const {
   SALES_PREWARM_SPACING_MS,
   SALES_EXTEND_TTL_ON_HIT,
   SALES_SORT_BY,
+  SALES_NAV_COOLDOWN_MS,
   SALES_FULL_WARMER_DELAY_MS,
   SALES_FULL_WARMER_SPACING_MS,
   SALES_POLL_MS,
@@ -295,6 +296,14 @@ function saleItemToLine(it) {
 
 const navEpoch = new Map();
 const navLocks = new Map();
+const navCooldownUntil = new Map();
+
+function clearCooldownIfExpired(messageId) {
+  const until = navCooldownUntil.get(messageId);
+  if (until && until <= Date.now()) {
+    navCooldownUntil.delete(messageId);
+  }
+}
 
 function withNavLock(messageId, fn) {
   const previous = navLocks.get(messageId) || Promise.resolve();
@@ -456,12 +465,27 @@ async function handleButtonInteraction(interaction) {
     return;
   }
 
+  if (SALES_NAV_COOLDOWN_MS > 0) {
+    clearCooldownIfExpired(msgId);
+    const nextAllowed = navCooldownUntil.get(msgId);
+    if (nextAllowed && nextAllowed > Date.now()) {
+      await interaction.reply({ content: 'Please wait a moment before changing pages again.', ephemeral: true }).catch(()=>{});
+      return;
+    }
+  }
+
   const acked = await interaction.deferUpdate().then(() => true).catch((err) => {
     SALES_TAG.debug(`Failed to defer sales nav interaction: ${err?.message || err}`);
     return false;
   });
   if (!acked) {
     return;
+  }
+
+  if (SALES_NAV_COOLDOWN_MS > 0) {
+    const until = Date.now() + SALES_NAV_COOLDOWN_MS;
+    navCooldownUntil.set(msgId, until);
+    setTimeout(() => clearCooldownIfExpired(msgId), SALES_NAV_COOLDOWN_MS * 2);
   }
 
   try {
