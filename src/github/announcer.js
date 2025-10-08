@@ -1,0 +1,210 @@
+const { EmbedBuilder, time: discordTime } = require('discord.js');
+const axios = require('axios').default;
+const { log, time } = require('../logger');
+const { client } = require('../discord/client');
+const { dbAll, dbGet, dbRun } = require('../db');
+const { CHANNEL_KINDS, hasBotPerms } = require('../discord/channels');
+const {
+  GITHUB_ANNOUNCER_ENABLED,
+  GITHUB_OWNER,
+  GITHUB_REPO,
+  GITHUB_BRANCH,
+  GITHUB_TOKEN,
+  GITHUB_POLL_MS,
+  GITHUB_ANNOUNCE_ON_START,
+  GITHUB_MAX_CATCHUP,
+  GITHUB_EMBED_COLOR,
+} = require('../config');
+
+const repoSlug = GITHUB_OWNER && GITHUB_REPO ? `${GITHUB_OWNER}/${GITHUB_REPO}` : null;
+const github = axios.create({
+  baseURL: 'https://api.github.com',
+  headers: {
+    'User-Agent': 'ParadiseBot-GitHubAnnouncer/1.0',
+    Accept: 'application/vnd.github+json',
+    ...(GITHUB_TOKEN ? { Authorization: `Bearer ${GITHUB_TOKEN}` } : {}),
+  },
+  timeout: 10_000,
+});
+
+async function fetchLatestCommits(limit = 10) {
+  const params = new URLSearchParams({ per_page: String(limit) });
+  if (GITHUB_BRANCH) params.set('sha', GITHUB_BRANCH);
+  const { data } = await github.get(`/repos/${repoSlug}/commits?${params.toString()}`);
+  return Array.isArray(data) ? data : [];
+}
+
+async function fetchCommitDetail(sha) {
+  const { data } = await github.get(`/repos/${repoSlug}/commits/${sha}`);
+  return data;
+}
+
+function shortSha(sha) {
+  return sha ? String(sha).slice(0, 7) : '';
+}
+
+function firstLine(text) {
+  if (!text) return 'No commit message';
+  return String(text).split(/\r?\n/, 1)[0];
+}
+
+function summarizeFiles(files = []) {
+  if (!Array.isArray(files) || files.length === 0) return 'No file changes listed.';
+  const snippets = files.slice(0, 5).map((file) => {
+    const indicator = file.status === 'removed' ? '➖' : file.status === 'added' ? '➕' : '✏️';
+    return `${indicator} ${file.filename}`;
+  });
+  if (files.length > 5) snippets.push(`…and ${files.length - 5} more`);
+  return snippets.join('\n');
+}
+
+function buildEmbed(detail) {
+  const commit = detail.commit || {};
+  const author = commit.author || {};
+  const stats = detail.stats || {};
+  const commitDate = commit?.author?.date || commit?.committer?.date || null;
+  const embed = new EmbedBuilder()
+    .setColor(GITHUB_EMBED_COLOR)
+    .setTitle(`${firstLine(commit.message)} (${shortSha(detail.sha)})`)
+    .setURL(detail.html_url)
+    .setDescription(commit.message || '—')
+    .setTimestamp(commitDate ? new Date(commitDate) : new Date());
+
+  if (author.name) embed.addFields({ name: 'Author', value: author.name, inline: true });
+  if (commitDate) embed.addFields({ name: 'Committed', value: discordTime(new Date(commitDate), 'R'), inline: true });
+  embed.addFields(
+    { name: 'Additions', value: String(stats.additions ?? 0), inline: true },
+    { name: 'Deletions', value: String(stats.deletions ?? 0), inline: true },
+    { name: 'Files Changed', value: String(stats.total ?? detail.files?.length ?? 0), inline: true },
+  );
+
+  const summary = summarizeFiles(detail.files);
+  if (summary) embed.addFields({ name: 'Files', value: summary });
+
+  if (detail.author?.avatar_url) embed.setThumbnail(detail.author.avatar_url);
+
+  embed.setFooter({ text: `GitHub • ${repoSlug}` });
+  return embed;
+}
+
+async function loadLastSha() {
+  if (!repoSlug) return null;
+  const row = await dbGet('SELECT last_sha FROM github_announcements WHERE repo=?', [repoSlug]);
+  return row?.last_sha || null;
+}
+
+async function saveLastSha(sha) {
+  if (!repoSlug || !sha) return;
+  await dbRun(
+    'INSERT INTO github_announcements (repo, last_sha, announced_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE last_sha=VALUES(last_sha), announced_at=VALUES(announced_at)',
+    [repoSlug, sha, Math.floor(Date.now() / 1000)],
+  );
+}
+
+async function resolveGithubChannels() {
+  const rows = await dbAll('SELECT guild_id, channel_id FROM guild_channels WHERE kind=?', [CHANNEL_KINDS.GITHUB]);
+  if (!rows.length) return [];
+
+  const channels = [];
+  for (const row of rows) {
+    const guild = client.guilds.cache.get(row.guild_id);
+    if (!guild) {
+      log.tag('GITHUB').warn(`Guild missing from cache: ${row.guild_id}`);
+      continue;
+    }
+    let channel = guild.channels.cache.get(row.channel_id);
+    if (!channel) {
+      channel = await guild.channels.fetch(row.channel_id).catch(() => null);
+    }
+    if (!channel) {
+      log.tag('GITHUB').warn(`Channel ${row.channel_id} missing in guild=${guild.id}`);
+      continue;
+    }
+    const perms = hasBotPerms(channel);
+    if (!perms.ok) {
+      log.tag('GITHUB').warn(`Missing perms in channel=${channel.id} guild=${guild.id}`);
+      continue;
+    }
+    channels.push({ guildId: guild.id, channel });
+  }
+  return channels;
+}
+
+async function announceCommits(commits, targets) {
+  if (!targets.length) return;
+
+  for (const commit of commits) {
+    try {
+      const detail = await fetchCommitDetail(commit.sha);
+      const embed = buildEmbed(detail);
+      await Promise.all(targets.map(({ channel, guildId }) =>
+        channel.send({ embeds: [embed] }).catch((err) => {
+          log.tag('GITHUB').error(`Failed to send commit ${shortSha(commit.sha)} to guild=${guildId}: ${err?.message || err}`);
+        })
+      ));
+      await saveLastSha(detail.sha);
+      log.tag('GITHUB').info(`Announced commit ${shortSha(detail.sha)} to ${targets.length} channels`);
+    } catch (err) {
+      log.tag('GITHUB').error(`Failed to announce commit ${commit.sha}: ${err?.message || err}`);
+    }
+  }
+}
+
+async function pollGithub() {
+  const t = time('POLL:github');
+  try {
+    const targets = await resolveGithubChannels();
+    if (!targets.length) return;
+
+    const commits = await fetchLatestCommits(Math.max(GITHUB_MAX_CATCHUP, 5));
+    if (!commits.length) return;
+
+    const lastSha = await loadLastSha();
+    const newCommits = [];
+    for (const commit of commits) {
+      if (lastSha && commit.sha === lastSha) break;
+      newCommits.push(commit);
+    }
+
+    if (!lastSha && !GITHUB_ANNOUNCE_ON_START) {
+      await saveLastSha(commits[0].sha);
+      log.tag('GITHUB').info('Stored latest commit without announcing (announce_on_start disabled).');
+      return;
+    }
+
+    if (!newCommits.length) return;
+
+    const toAnnounce = newCommits.slice(-GITHUB_MAX_CATCHUP).reverse();
+    await announceCommits(toAnnounce, targets);
+  } catch (err) {
+    log.tag('GITHUB').error('pollGithub failed:', err?.message || err);
+  } finally {
+    t.end();
+  }
+}
+
+function scheduleGithubLoop(runNow = false) {
+  if (!GITHUB_ANNOUNCER_ENABLED) {
+    log.tag('GITHUB').info('GitHub announcer disabled via config.');
+    return;
+  }
+  if (!repoSlug) {
+    log.tag('GITHUB').warn('GitHub announcer enabled but GITHUB_OWNER/GITHUB_REPO not set.');
+    return;
+  }
+
+  const run = async () => {
+    try { await pollGithub(); }
+    catch (err) { log.tag('GITHUB').error('pollGithub errored:', err?.stack || err); }
+    finally { setTimeout(run, GITHUB_POLL_MS); };
+  };
+
+  log.tag('GITHUB').info(`GitHub announcer watching ${repoSlug} every ${Math.round(GITHUB_POLL_MS / 1000)}s`);
+  if (runNow) {
+    run();
+  } else {
+    setTimeout(run, GITHUB_POLL_MS);
+  }
+}
+
+module.exports = { scheduleGithubLoop };

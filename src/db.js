@@ -142,6 +142,14 @@ async function initDb() {
   `);
 
   await dbRun(`
+    CREATE TABLE IF NOT EXISTS github_announcements (
+      repo         VARCHAR(191) NOT NULL PRIMARY KEY,
+      last_sha     VARCHAR(64) NULL,
+      announced_at BIGINT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await dbRun(`
     CREATE TABLE IF NOT EXISTS link_permits (
       guild_id   VARCHAR(32) NOT NULL,
       user_id    VARCHAR(32) NOT NULL,
