@@ -16,7 +16,43 @@ const {
   GITHUB_EMBED_COLOR,
 } = require('../config');
 
-const repoSlug = GITHUB_OWNER && GITHUB_REPO ? `${GITHUB_OWNER}/${GITHUB_REPO}` : null;
+function deriveRepoSlug(owner, repo) {
+  const trim = (value) => (typeof value === 'string' ? value.trim() : '');
+  const trimmedOwner = trim(owner);
+  const trimmedRepo = trim(repo);
+
+  if (!trimmedOwner && !trimmedRepo) return null;
+
+  const extractSlug = (input) => {
+    if (!input) return null;
+    const cleaned = String(input).trim();
+    if (!cleaned) return null;
+
+    const urlMatch = cleaned.match(/github\.com[:/]+(.+)/i);
+    if (urlMatch && urlMatch[1]) {
+      const slug = urlMatch[1].replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
+      if (slug.includes('/')) return slug;
+    }
+
+    if (cleaned.includes('/')) {
+      const slug = cleaned.replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '');
+      if (slug.includes('/')) return slug;
+    }
+
+    return null;
+  };
+
+  const slugFromRepo = extractSlug(trimmedRepo);
+  if (slugFromRepo) return slugFromRepo;
+
+  if (trimmedOwner && trimmedRepo) {
+    return `${trimmedOwner}/${trimmedRepo.replace(/\.git$/i, '')}`;
+  }
+
+  return null;
+}
+
+const repoSlug = deriveRepoSlug(GITHUB_OWNER, GITHUB_REPO);
 const github = axios.create({
   baseURL: 'https://api.github.com',
   headers: {
