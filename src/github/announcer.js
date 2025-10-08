@@ -84,42 +84,46 @@ function firstLine(text) {
   return String(text).split(/\r?\n/, 1)[0];
 }
 
-function summarizeFiles(files = []) {
-  if (!Array.isArray(files) || files.length === 0) return 'No file changes listed.';
-  const snippets = files.slice(0, 5).map((file) => {
-    const indicator = file.status === 'removed' ? '➖' : file.status === 'added' ? '➕' : '✏️';
-    return `${indicator} ${file.filename}`;
-  });
-  if (files.length > 5) snippets.push(`…and ${files.length - 5} more`);
-  return snippets.join('\n');
-}
-
 function buildEmbed(detail) {
   const commit = detail.commit || {};
   const author = commit.author || {};
-  const stats = detail.stats || {};
   const commitDate = commit?.author?.date || commit?.committer?.date || null;
   const embed = new EmbedBuilder()
     .setColor(GITHUB_EMBED_COLOR)
-    .setTitle(`${firstLine(commit.message)} (${shortSha(detail.sha)})`)
+    .setTitle(firstLine(commit.message))
     .setURL(detail.html_url)
-    .setDescription(commit.message || '—')
     .setTimestamp(commitDate ? new Date(commitDate) : new Date());
 
-  if (author.name) embed.addFields({ name: 'Author', value: author.name, inline: true });
-  if (commitDate) embed.addFields({ name: 'Committed', value: discordTime(new Date(commitDate), 'R'), inline: true });
-  embed.addFields(
-    { name: 'Additions', value: String(stats.additions ?? 0), inline: true },
-    { name: 'Deletions', value: String(stats.deletions ?? 0), inline: true },
-    { name: 'Files Changed', value: String(stats.total ?? detail.files?.length ?? 0), inline: true },
-  );
+  if (repoSlug) {
+    embed.setAuthor({ name: repoSlug, url: `https://github.com/${repoSlug}` });
+  }
 
-  const summary = summarizeFiles(detail.files);
-  if (summary) embed.addFields({ name: 'Files', value: summary });
+  const metaParts = [];
+
+  const shaLink = detail.html_url ? `[${shortSha(detail.sha)}](${detail.html_url})` : shortSha(detail.sha);
+  if (shaLink) metaParts.push(shaLink);
+
+  if (commitDate) metaParts.push(discordTime(new Date(commitDate), 'R'));
+
+  const displayAuthor = detail.author?.login || author.name || author.email || null;
+  if (displayAuthor) {
+    const authorLink = detail.author?.html_url ? `[${displayAuthor}](${detail.author.html_url})` : displayAuthor;
+    metaParts.push(`by ${authorLink}`);
+  }
+
+  const metaLine = metaParts.join(' • ');
+  const commitMessage = String(commit.message ?? '').trim() || 'No commit message';
+
+  if (metaLine || commitMessage) {
+    const descriptionSections = [];
+    if (metaLine) descriptionSections.push(metaLine);
+    if (commitMessage) descriptionSections.push(commitMessage);
+    embed.setDescription(descriptionSections.join('\n\n'));
+  }
 
   if (detail.author?.avatar_url) embed.setThumbnail(detail.author.avatar_url);
 
-  embed.setFooter({ text: `GitHub • ${repoSlug}` });
+  embed.setFooter({ text: 'GitHub' });
   return embed;
 }
 
