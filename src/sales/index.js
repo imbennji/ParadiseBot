@@ -250,7 +250,7 @@ async function getPageData(cc, pageIndex) {
     const start = pageIndex * SALES_PAGE_SIZE;
     const t = time(`SALES:fetch:${cc}:${pageIndex}`);
     const data = await fetchSearchJson(cc, start, SALES_PAGE_SIZE);
-    let items = parseSearchHtml(data.results_html || '');
+    let items = parseSearchHtml(data.results_html || '').slice(0, SALES_PAGE_SIZE);
 
     const rawTotal = Number(data.total_count);
     let totalPages;
