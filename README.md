@@ -140,9 +140,3 @@ Copyright © Paradise. All rights reserved.
 - Provided "as is" without warranty.
 
 ---
-
-## 💬 Support
-Ping the maintainer in the Paradise staff channels or open a private ticket. Include:
-- What happened vs. what you expected.
-- Relevant log output (set `DEBUG_LEVEL=debug`, optionally `DEBUG_HTTP=1`, `DEBUG_SQL=1`).
-- Bot version / commit and Node.js version.
