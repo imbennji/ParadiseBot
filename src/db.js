@@ -141,6 +141,17 @@ async function initDb() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
 
+  await dbRun(`
+    CREATE TABLE IF NOT EXISTS xp_progress (
+      guild_id        VARCHAR(32) NOT NULL,
+      user_id         VARCHAR(32) NOT NULL,
+      xp              INT NOT NULL DEFAULT 0,
+      level           INT NOT NULL DEFAULT 0,
+      last_message_at INT NOT NULL DEFAULT 0,
+      PRIMARY KEY (guild_id, user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
   await ensureColumn('nowplaying_state', 'announced', 'TINYINT NOT NULL DEFAULT 0');
   await ensureColumn('owned_seen', 'seeded', 'TINYINT NOT NULL DEFAULT 0');
 
