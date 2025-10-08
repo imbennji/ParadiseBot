@@ -49,6 +49,7 @@ const commandBuilders = [
           { name: 'steam_game_sales',       value: CHANNEL_KINDS.SALES },
           { name: 'xp_levelups',            value: CHANNEL_KINDS.XP },
           { name: 'logging',                value: CHANNEL_KINDS.LOGGING },
+          { name: 'github_commits',         value: CHANNEL_KINDS.GITHUB },
         )
     )
     .addChannelOption(opt =>

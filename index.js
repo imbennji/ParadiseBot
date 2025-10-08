@@ -31,6 +31,13 @@ const {
   CONCURRENCY,
   SCHEMA_TTL_MS,
   BACKFILL_LIMIT,
+  GITHUB_ANNOUNCER_ENABLED,
+  GITHUB_OWNER,
+  GITHUB_REPO,
+  GITHUB_BRANCH,
+  GITHUB_POLL_MS,
+  GITHUB_ANNOUNCE_ON_START,
+  GITHUB_MAX_CATCHUP,
 } = require('./src/config');
 const { client } = require('./src/discord/client');
 const { registerCommandsOnStartup, handleChatCommand } = require('./src/discord/commands');
@@ -43,6 +50,7 @@ const { scheduleOwnedLoop } = require('./src/loops/owned');
 const { scheduleNowPlayingLoop } = require('./src/loops/nowPlaying');
 const { scheduleLeaderboardLoop } = require('./src/loops/leaderboard');
 const { scheduleSalesLoop, handleButtonInteraction, startFullSalesWarm } = require('./src/sales/index');
+const { scheduleGithubLoop } = require('./src/github/announcer');
 const { initDb } = require('./src/db');
 const { Events } = require('discord.js');
 
@@ -96,6 +104,13 @@ log.info('Config:', JSON.stringify({
   CONCURRENCY,
   SCHEMA_TTL_MS,
   BACKFILL_LIMIT,
+  GITHUB_ANNOUNCER_ENABLED,
+  GITHUB_OWNER,
+  GITHUB_REPO,
+  GITHUB_BRANCH,
+  GITHUB_POLL_MS,
+  GITHUB_ANNOUNCE_ON_START,
+  GITHUB_MAX_CATCHUP,
   DEBUG_LEVEL,
   DEBUG_HTTP,
   DEBUG_SQL,
@@ -112,6 +127,7 @@ client.once(Events.ClientReady, async (c) => {
   scheduleNowPlayingLoop(true);
   scheduleLeaderboardLoop(true);
   scheduleSalesLoop(true);
+  scheduleGithubLoop(true);
 
   if (SALES_FULL_WARMER_ENABLED) startFullSalesWarm(SALES_REGION_CC);
 });

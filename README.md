@@ -22,6 +22,7 @@ Private automation bot for the Paradise Discord server. It connects member Steam
 - **Content moderation** autodeletes slurs / hate speech using a normalized term list (extend via `MODERATION_BANNED_TERMS`).
 - **Link permits** automatically delete non-staff links unless a timed permit is granted (`/permit`).
 - **Audit logging** captures joins/leaves, message deletes/edits, bans/unbans, channel updates, and more into a configured log channel.
+- **GitHub commit announcements** poll a repository for new commits and post embeds into a configured `/setchannel type:github_commits` target.
 
 ### Reliability & data
 - **MySQL 8+** persistence with automatic table creation & column migrations on boot.
@@ -73,6 +74,7 @@ All configuration lives in `.env`. The `example.env` file documents every suppor
 | Database | `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASS`, `DB_NAME` |
 | Steam polling | `POLL_SECONDS`, `OWNED_POLL_SECONDS`, `NOWPLAYING_POLL_SECONDS`, `LEADERBOARD_POLL_SECONDS`, `SALES_POLL_SECONDS`, `MAX_CONCURRENCY` |
 | Sales board | `SALES_REGION_CC`, `SALES_PAGE_SIZE`, `SALES_PRECACHE_PAGES`, `SALES_PRECACHE_PREV_PAGES`, `SALES_PAGE_TTL_MS`, `SALES_MAX_PAGES_CACHE`, `SALES_FULL_WARMER_ENABLED` |
+| GitHub announcer | `GITHUB_ANNOUNCER_ENABLED`, `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_BRANCH`, `GITHUB_POLL_SECONDS`, `GITHUB_MAX_CATCHUP`, `GITHUB_ANNOUNCE_ON_START`, `GITHUB_TOKEN`, `GITHUB_EMBED_COLOR` |
 | Milestones & rarity | `PLAYTIME_MARKS`, `ACHIEVEMENT_MARKS`, `RARE_PCT`, `RARITY_TTL_HOURS` |
 | Moderation | `MODERATION_BANNED_TERMS` (comma-separated extra phrases) |
 | Logging | `DEBUG_LEVEL`, `DEBUG_HTTP`, `DEBUG_SQL`, `STEAM_EMBED_COLOR` |
@@ -84,7 +86,7 @@ Restart the bot whenever you change `.env`; modules read configuration at boot.
 ## 🛠️ Slash commands
 | Command | Who | Purpose |
 | --- | --- | --- |
-| `/setchannel type:<...> [channel]` | Manage Server | Map announcement/log targets for achievements, library events, sales board, XP, logs, etc. Triggers leaderboard / sales embed creation when pointed at new channels. |
+| `/setchannel type:<...> [channel]` | Manage Server | Map announcement/log targets for achievements, library events, GitHub commits, sales board, XP, logs, etc. Triggers leaderboard / sales embed creation when pointed at new channels. |
 | `/linksteam profile:<id|url>` | Members | Link your Steam account. Prevents duplicate claims across users. |
 | `/unlinksteam` | Members | Remove your Steam link and clear cached stats/watermarks. |
 | `/pingsteam [profile]` | Staff | Health check for DB + Steam API (optional profile test). |
@@ -105,6 +107,7 @@ Restart the bot whenever you change `.env`; modules read configuration at boot.
 - **Now playing loop**: tracks current sessions, confirms starts, and posts end summaries after idle timeout.
 - **Leaderboard refresher**: rewrites the persistent embed on a schedule with aggregated stats.
 - **Sales crawler**: fetches Steam store specials, maintains cache shards, and refreshes the permanent embed & button pagination.
+- **GitHub announcer**: polls the configured repository for new commits and posts Discord embeds with stats and file summaries.
 
 All loops respect concurrency settings, seeding rules, and backfill limits to avoid overwhelming channels during first runs.
 
@@ -119,7 +122,7 @@ All loops respect concurrency settings, seeding rules, and backfill limits to av
 ---
 
 ## 🗄️ Database schema
-Tables are created automatically on startup. Key tables include `links`, `steam_account_locks`, `watermarks`, `owned_seen`, `nowplaying_state`, `user_game_stats`, `leaderboard_msgs`, `sales_msgs`, `link_permits`, and `xp_progress`. Additional schema upgrades run via helper `ensureColumn` checks, so keep the bot running with a user that can issue `ALTER TABLE` when deploying updates.
+Tables are created automatically on startup. Key tables include `links`, `steam_account_locks`, `watermarks`, `owned_seen`, `nowplaying_state`, `user_game_stats`, `leaderboard_msgs`, `sales_msgs`, `github_announcements`, `link_permits`, and `xp_progress`. Additional schema upgrades run via helper `ensureColumn` checks, so keep the bot running with a user that can issue `ALTER TABLE` when deploying updates.
 
 ---
 

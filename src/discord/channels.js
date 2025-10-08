@@ -11,6 +11,7 @@ const CHANNEL_KINDS = {
   SALES: 'steam_game_sales',
   XP: 'xp_levelups',
   LOGGING: 'logging',
+  GITHUB: 'github_commits',
 };
 
 function normalizeKind(s) {
@@ -24,6 +25,7 @@ function normalizeKind(s) {
   if (['steam_sales','sales','store_sales','steam_sales_board','steam_game_sales'].includes(v)) return CHANNEL_KINDS.SALES;
   if (['xp','levels','level_ups','levelups','xp_levelups','xp_announcements'].includes(v)) return CHANNEL_KINDS.XP;
   if (['log','logs','logging','mod_logs','server_logs'].includes(v)) return CHANNEL_KINDS.LOGGING;
+  if (['github','commits','github_commits','github_updates','gh'].includes(v)) return CHANNEL_KINDS.GITHUB;
   return null;
 }
 

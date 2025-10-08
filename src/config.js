@@ -23,6 +23,16 @@ const DB_CFG = {
 
 const STEAM_HOST = 'https://api.steampowered.com';
 
+const GITHUB_ANNOUNCER_ENABLED = (process.env.GITHUB_ANNOUNCER_ENABLED ?? 'false').toLowerCase() === 'true';
+const GITHUB_OWNER = process.env.GITHUB_OWNER || null;
+const GITHUB_REPO = process.env.GITHUB_REPO || null;
+const GITHUB_BRANCH = process.env.GITHUB_BRANCH || null;
+const GITHUB_TOKEN = process.env.GITHUB_TOKEN || null;
+const GITHUB_POLL_MS = Math.max(30, parseInt(process.env.GITHUB_POLL_SECONDS || '60', 10)) * 1000;
+const GITHUB_ANNOUNCE_ON_START = (process.env.GITHUB_ANNOUNCE_ON_START ?? 'false').toLowerCase() === 'true';
+const GITHUB_MAX_CATCHUP = Math.max(1, parseInt(process.env.GITHUB_MAX_CATCHUP || '5', 10));
+const GITHUB_EMBED_COLOR = parseColor(process.env.GITHUB_EMBED_COLOR || '#24292E', 0x24292e);
+
 function parseColor(input, fallbackInt) {
   try {
     if (!input) return fallbackInt;
@@ -122,4 +132,13 @@ module.exports = {
   NOWPLAYING_IDLE_TIMEOUT_SECONDS,
   SESSION_MIN_MINUTES,
   RECENT_LIMIT,
+  GITHUB_ANNOUNCER_ENABLED,
+  GITHUB_OWNER,
+  GITHUB_REPO,
+  GITHUB_BRANCH,
+  GITHUB_TOKEN,
+  GITHUB_POLL_MS,
+  GITHUB_ANNOUNCE_ON_START,
+  GITHUB_MAX_CATCHUP,
+  GITHUB_EMBED_COLOR,
 };
