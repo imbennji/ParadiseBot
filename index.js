@@ -36,6 +36,7 @@ const { client } = require('./src/discord/client');
 const { registerCommandsOnStartup, handleChatCommand } = require('./src/discord/commands');
 const { registerLogging } = require('./src/discord/logging');
 const { awardMessageXp } = require('./src/discord/xp');
+const { messageHasLink, hasActivePermit, isStaff } = require('./src/discord/permits');
 const { scheduleAchievementsLoop } = require('./src/loops/achievements');
 const { scheduleOwnedLoop } = require('./src/loops/owned');
 const { scheduleNowPlayingLoop } = require('./src/loops/nowPlaying');
@@ -138,6 +139,23 @@ client.on(Events.MessageCreate, async (message) => {
     await awardMessageXp(message);
   } catch (err) {
     log.tag('XP').error('Failed to award message XP:', err?.stack || err);
+  }
+
+  if (!message.guild || message.author.bot) return;
+  if (!messageHasLink(message)) return;
+
+  try {
+    const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
+    if (isStaff(member)) return;
+
+    const permitted = await hasActivePermit(message.guild.id, message.author.id);
+    if (permitted) return;
+
+    await message.delete().catch(() => {});
+    await message.author.send(`Your message in **${message.guild.name}** was removed because posting links requires a staff permit.`).catch(() => {});
+    log.tag('PERMIT').info(`Deleted link from user=${message.author.id} guild=${message.guild.id}`);
+  } catch (err) {
+    log.tag('PERMIT').error('Failed to enforce link permit:', err?.stack || err);
   }
 });
 
