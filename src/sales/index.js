@@ -294,6 +294,24 @@ function saleItemToLine(it) {
 }
 
 const navEpoch = new Map();
+const navLocks = new Map();
+
+function withNavLock(messageId, fn) {
+  const previous = navLocks.get(messageId) || Promise.resolve();
+  let runPromise;
+  runPromise = (async () => {
+    try { await previous; } catch {}
+    try {
+      return await fn();
+    } finally {
+      if (navLocks.get(messageId) === runPromise) {
+        navLocks.delete(messageId);
+      }
+    }
+  })();
+  navLocks.set(messageId, runPromise);
+  return runPromise;
+}
 
 function buildSalesEmbed(cc, pageIndex, items, totalPages) {
   const lines = items.length ? items.map(saleItemToLine).join('\n\n') : '_No discounted games found._';
@@ -425,27 +443,41 @@ async function handleButtonInteraction(interaction) {
   if (!id.startsWith('sales_nav:')) return;
 
   const parts = id.split(':');
-  if (parts.length < 4) return interaction.reply({ content: 'Malformed button.', ephemeral: true }).catch(()=>{});
+  if (parts.length < 4) {
+    await interaction.reply({ content: 'Malformed button.', ephemeral: true }).catch(()=>{});
+    return;
+  }
 
   const cc = parts[1] || SALES_REGION_CC;
   const requestedPage = Math.max(0, Number(parts[2] || 0));
   const msgId = interaction.message?.id;
-  if (!msgId) return interaction.reply({ content: 'Missing message context.', ephemeral: true }).catch(()=>{});
+  if (!msgId) {
+    await interaction.reply({ content: 'Missing message context.', ephemeral: true }).catch(()=>{});
+    return;
+  }
 
-  const myEpoch = (navEpoch.get(msgId) || 0) + 1;
-  navEpoch.set(msgId, myEpoch);
-
-  await interaction.deferUpdate().catch(()=>{});
+  const acked = await interaction.deferUpdate().then(() => true).catch((err) => {
+    SALES_TAG.debug(`Failed to defer sales nav interaction: ${err?.message || err}`);
+    return false;
+  });
+  if (!acked) {
+    return;
+  }
 
   try {
-    const data = await getPageData(cc, requestedPage);
-    if ((navEpoch.get(msgId) || 0) !== myEpoch) return;
+    await withNavLock(msgId, async () => {
+      const myEpoch = (navEpoch.get(msgId) || 0) + 1;
+      navEpoch.set(msgId, myEpoch);
 
-    const embed = buildSalesEmbed(cc, requestedPage, data.items, data.totalPages);
-    const components = buildSalesComponents(cc, requestedPage, data.totalPages, myEpoch);
-    await interaction.editReply({ embeds: [embed], components }).catch(()=>{});
+      const data = await getPageData(cc, requestedPage);
+      if ((navEpoch.get(msgId) || 0) !== myEpoch) return;
 
-    prewarmAround(cc, requestedPage, data.totalPages);
+      const embed = buildSalesEmbed(cc, requestedPage, data.items, data.totalPages);
+      const components = buildSalesComponents(cc, requestedPage, data.totalPages, myEpoch);
+      await interaction.editReply({ embeds: [embed], components });
+
+      prewarmAround(cc, requestedPage, data.totalPages);
+    });
   } catch (e) {
     SALES_TAG.error('button handler error:', e?.stack || e);
     try { await interaction.editReply({ content: `Error: ${e.message || e}`, components: [] }); } catch {}
