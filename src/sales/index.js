@@ -491,9 +491,34 @@ async function handleButtonInteraction(interaction) {
 
   const cc = parts[1] || SALES_REGION_CC;
   const requestedPage = Math.max(0, Number(parts[2] || 0));
+  const epoch = Number(parts[3] || 0);
   const msgId = interaction.message?.id;
   if (!msgId) {
     await interaction.reply({ content: 'Missing message context.', ephemeral: true }).catch(()=>{});
+    return;
+  }
+
+  if (!Number.isFinite(epoch) || epoch <= 0) {
+    await interaction.reply({ content: 'Malformed button state.', ephemeral: true }).catch(()=>{});
+    return;
+  }
+
+  let currentEpoch = navEpoch.get(msgId) || 0;
+  if (currentEpoch === 0) {
+    navEpoch.set(msgId, epoch);
+    currentEpoch = epoch;
+  }
+
+  if (epoch !== currentEpoch) {
+    const message = epoch < currentEpoch
+      ? 'Those buttons are a little out of date. Please use the refreshed buttons on the message.'
+      : 'Please wait a moment for the current page update to finish.';
+    await interaction.reply({ content: message, ephemeral: true }).catch(()=>{});
+    return;
+  }
+
+  if (navLocks.has(msgId)) {
+    await interaction.reply({ content: 'Hold on, I’m still loading the last request. Try again in a moment.', ephemeral: true }).catch(()=>{});
     return;
   }
 
