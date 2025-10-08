@@ -152,6 +152,7 @@ async function handleMessageDelete(message) {
   const attachments = message.attachments && message.attachments.size
     ? Array.from(message.attachments.values())
     : [];
+  const embedCount = Array.isArray(message.embeds) ? message.embeds.length : 0;
 
   if (!content && attachments.length === 0) {
     // If we have no details, still log the deletion with minimal info.
@@ -175,15 +176,20 @@ async function handleMessageDelete(message) {
       embed.addFields({ name: 'Message ID', value: `${message.id}`, inline: true });
     }
 
-    if (content) {
-      embed.addFields({ name: 'Content', value: trimFieldValue(content) });
-    }
+    const contentFieldValue = content
+      ? trimFieldValue(content)
+      : embedCount
+        ? `*No cached text content. ${embedCount} embed${embedCount === 1 ? '' : 's'} were present.*`
+        : '*No cached text content.*';
+    embed.addFields({ name: 'Content', value: contentFieldValue });
 
     if (attachments.length) {
       const value = attachments
         .map(att => `[${att.name || 'attachment'}](${att.url})`)
         .join('\n');
       embed.addFields({ name: 'Attachments', value: trimFieldValue(value) });
+    } else {
+      embed.addFields({ name: 'Attachments', value: '*None*' });
     }
 
     const footer = buildUserFooter(author, message.id ? `Message ID: ${message.id}` : null, authorId);
