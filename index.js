@@ -37,6 +37,7 @@ const { registerCommandsOnStartup, handleChatCommand } = require('./src/discord/
 const { registerLogging } = require('./src/discord/logging');
 const { awardMessageXp } = require('./src/discord/xp');
 const { messageHasLink, hasActivePermit, isStaff } = require('./src/discord/permits');
+const { enforceContentModeration } = require('./src/discord/moderation');
 const { scheduleAchievementsLoop } = require('./src/loops/achievements');
 const { scheduleOwnedLoop } = require('./src/loops/owned');
 const { scheduleNowPlayingLoop } = require('./src/loops/nowPlaying');
@@ -142,10 +143,24 @@ client.on(Events.MessageCreate, async (message) => {
   }
 
   if (!message.guild || message.author.bot) return;
+
+  let member = message.member;
+  if (!member) {
+    member = await message.guild.members.fetch(message.author.id).catch(() => null);
+  }
+
+  if (!isStaff(member)) {
+    try {
+      const removed = await enforceContentModeration(message);
+      if (removed) return;
+    } catch (err) {
+      log.tag('MODERATION').error('Failed to evaluate message for moderation:', err?.stack || err);
+    }
+  }
+
   if (!messageHasLink(message)) return;
 
   try {
-    const member = message.member || await message.guild.members.fetch(message.author.id).catch(() => null);
     if (isStaff(member)) return;
 
     const permitted = await hasActivePermit(message.guild.id, message.author.id);
