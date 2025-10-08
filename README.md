@@ -22,7 +22,7 @@ Private automation bot for the Paradise Discord server. It connects member Steam
 - **Content moderation** autodeletes slurs / hate speech using a normalized term list (extend via `MODERATION_BANNED_TERMS`).
 - **Link permits** automatically delete non-staff links unless a timed permit is granted (`/permit`).
 - **Audit logging** captures joins/leaves, message deletes/edits, bans/unbans, channel updates, and more into a configured log channel.
-- **GitHub commit announcements** poll a repository for new commits and post embeds into a configured `/setchannel type:github_commits` target.
+- **GitHub commit announcements** poll a repository or receive GitHub webhooks for new commits and post embeds into a configured `/setchannel type:github_commits` target.
 
 ### Reliability & data
 - **MySQL 8+** persistence with automatic table creation & column migrations on boot.
@@ -74,12 +74,25 @@ All configuration lives in `.env`. The `example.env` file documents every suppor
 | Database | `DB_HOST`<br>`DB_PORT`<br>`DB_USER`<br>`DB_PASS`<br>`DB_NAME` | Hostname or IP (e.g., `127.0.0.1`).<br>Port number (default `3306`).<br>Database username.<br>Database password.<br>Database/schema name. |
 | Steam polling | `POLL_SECONDS`<br>`OWNED_POLL_SECONDS`<br>`NOWPLAYING_POLL_SECONDS`<br>`LEADERBOARD_POLL_SECONDS`<br>`SALES_POLL_SECONDS`<br>`MAX_CONCURRENCY` | Integer seconds between polls (defaults: `300`, `3600`, `120`, `300`, `86400`).<br>Maximum concurrent Steam API calls (integer, default `4`). |
 | Sales board | `SALES_SORT_BY`<br>`SALES_REGION_CC`<br>`SALES_PAGE_SIZE`<br>`SALES_PAGE_TTL_MS`<br>`SALES_EXTEND_TTL_ON_HIT`<br>`SALES_PRECACHE_PAGES`<br>`SALES_PRECACHE_PREV_PAGES`<br>`SALES_PREWARM_SPACING_MS`<br>`SALES_FULL_WARMER_ENABLED`<br>`SALES_FULL_WARMER_DELAY_MS`<br>`SALES_FULL_WARMER_SPACING_MS`<br>`SALES_MAX_PAGES_CACHE` | Steam sort key (e.g., `Discount_DESC`).<br>ISO 3166-1 alpha-2 country code (e.g., `US`).<br>Results per page (integer, default `10`).<br>Cache TTL in milliseconds (default `1200000`).<br>`true`/`false` toggle for TTL extension.<br>Number of future pages to cache (integer, default `3`).<br>Number of previous pages to cache (integer, default `1`).<br>Delay between prewarm requests in ms (integer, default `200`).<br>`true`/`false` toggle to warm every page.<br>Delay before full warmer in ms (integer, default `15000`).<br>Spacing between full warmer requests in ms (integer, default `1200`).<br>Maximum cached pages (integer, default `600`). |
-| GitHub announcer | `GITHUB_ANNOUNCER_ENABLED`<br>`GITHUB_OWNER`<br>`GITHUB_REPO`<br>`GITHUB_BRANCH`<br>`GITHUB_TOKEN`<br>`GITHUB_POLL_SECONDS`<br>`GITHUB_MAX_CATCHUP`<br>`GITHUB_ANNOUNCE_ON_START`<br>`GITHUB_EMBED_COLOR` | `true`/`false` toggle.<br>Repository owner/org name.<br>Repository name.<br>Branch name (e.g., `main`).<br>GitHub token (optional, supports fine-grained PATs).<br>Integer seconds between polls (default `60`).<br>Maximum missed commits to announce per poll (integer, default `5`).<br>`true`/`false` toggle to post immediately on boot.<br>Hex color string (e.g., `#24292E`). |
+| GitHub announcer | `GITHUB_ANNOUNCER_ENABLED`<br>`GITHUB_OWNER`<br>`GITHUB_REPO`<br>`GITHUB_BRANCH`<br>`GITHUB_TOKEN`<br>`GITHUB_POLL_SECONDS`<br>`GITHUB_MAX_CATCHUP`<br>`GITHUB_ANNOUNCE_ON_START`<br>`GITHUB_EMBED_COLOR`<br>`GITHUB_WEBHOOK_ENABLED`<br>`GITHUB_WEBHOOK_PORT`<br>`GITHUB_WEBHOOK_PATH`<br>`GITHUB_WEBHOOK_SECRET` | `true`/`false` toggle.<br>Repository owner/org name.<br>Repository name.<br>Branch name (e.g., `main`).<br>GitHub token (optional, supports fine-grained PATs).<br>Integer seconds between polls (default `60`).<br>Maximum missed commits to announce per poll (integer, default `5`).<br>`true`/`false` toggle to post immediately on boot.<br>Hex color string (e.g., `#24292E`).<br>`true`/`false` to run the built-in webhook listener.<br>TCP port for the webhook HTTP server.<br>Path component for the webhook endpoint (default `/github-webhook`).<br>Optional shared secret used to verify `x-hub-signature-256`. |
 | Milestones & rarity | `PLAYTIME_MARKS`<br>`ACHIEVEMENT_MARKS`<br>`RARE_PCT`<br>`RARITY_TTL_HOURS` | Comma-separated minute thresholds (e.g., `10,25,50,100`).<br>Comma-separated achievement counts (e.g., `25,50,75,100`).<br>Percent threshold for rarity callouts (floating number, default `1.0`).<br>Hours before rarity cache refresh (integer, default `24`). |
 | Moderation | `MODERATION_BANNED_TERMS` | Comma-separated additional phrases to block (case-insensitive). |
 | Logging & embeds | `DEBUG_LEVEL`<br>`DEBUG_HTTP`<br>`DEBUG_SQL`<br>`STEAM_EMBED_COLOR` | One of `silent`, `error`, `warn`, `info`, `debug`, `trace` (default `info`).<br>`0`/`1` integers to toggle HTTP tracing.<br>`0`/`1` integers to toggle SQL tracing.<br>Hex color string (e.g., `#171A21`). |
 
 Restart the bot whenever you change `.env`; modules read configuration at boot.
+
+### GitHub webhook mode
+
+The announcer can supplement or replace polling by accepting GitHub webhooks directly.
+
+1. **Expose the listener** – set `GITHUB_WEBHOOK_ENABLED=true`, choose an open `GITHUB_WEBHOOK_PORT`, and (optionally) tweak `GITHUB_WEBHOOK_PATH`/`GITHUB_WEBHOOK_SECRET`. Ensure the process is reachable from GitHub (public IP, reverse proxy, or tunnel).
+2. **Restart the bot** so the lightweight HTTP listener starts. Successful startup logs `Listening for GitHub webhooks on port …`.
+3. **Add a webhook in GitHub** – repository **Settings → Webhooks → Add webhook**.
+   - Payload URL: `https://your-host:${GITHUB_WEBHOOK_PORT}${GITHUB_WEBHOOK_PATH}` (adjust for TLS/proxy).
+   - Content type: `application/json`.
+   - Events: select **Just the push event** (others are ignored) plus optional **Ping** for testing.
+   - Secret: use the same value as `GITHUB_WEBHOOK_SECRET` if you enabled it.
+4. The bot resolves configured `/setchannel type:github_commits` targets and posts the same rich commit embeds used by the poller. Missed events are still caught by the periodic poll if you keep it enabled.
 
 ---
 

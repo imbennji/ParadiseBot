@@ -51,6 +51,7 @@ const { scheduleNowPlayingLoop } = require('./src/loops/nowPlaying');
 const { scheduleLeaderboardLoop } = require('./src/loops/leaderboard');
 const { scheduleSalesLoop, handleButtonInteraction, startFullSalesWarm } = require('./src/sales/index');
 const { scheduleGithubLoop } = require('./src/github/announcer');
+const { startGithubWebhookServer } = require('./src/github/webhook');
 const { initDb } = require('./src/db');
 const { Events } = require('discord.js');
 
@@ -117,6 +118,7 @@ log.info('Config:', JSON.stringify({
 }));
 
 registerLogging();
+startGithubWebhookServer();
 
 client.once(Events.ClientReady, async (c) => {
   log.tag('READY').info(`Logged in as ${c.user.tag}`);
