@@ -294,6 +294,90 @@ function saleItemToLine(it) {
 }
 
 const navEpoch = new Map();
+const navLocks = new Map();
+const navQueues = new Map();
+
+function withNavLock(messageId, fn) {
+  const previous = navLocks.get(messageId) || Promise.resolve();
+  let runPromise;
+  runPromise = (async () => {
+    try { await previous; } catch {}
+    try {
+      return await fn();
+    } finally {
+      if (navLocks.get(messageId) === runPromise) {
+        navLocks.delete(messageId);
+      }
+    }
+  })();
+  navLocks.set(messageId, runPromise);
+  return runPromise;
+}
+
+function getNavQueueState(messageId) {
+  let state = navQueues.get(messageId);
+  if (!state) {
+    state = { jobs: [], running: false };
+    navQueues.set(messageId, state);
+  }
+  return state;
+}
+
+async function processNavQueue(messageId) {
+  const state = navQueues.get(messageId);
+  if (!state || state.running) return;
+  state.running = true;
+
+  try {
+    while (state.jobs.length) {
+      const jobs = state.jobs.splice(0);
+      const latest = jobs[jobs.length - 1];
+      const targetPage = Math.max(0, Number(latest.page || 0));
+      const targetCc = latest.cc;
+
+      try {
+        await withNavLock(messageId, async () => {
+          const myEpoch = (navEpoch.get(messageId) || 0) + 1;
+          navEpoch.set(messageId, myEpoch);
+
+          const data = await getPageData(targetCc, targetPage);
+          const embed = buildSalesEmbed(targetCc, targetPage, data.items, data.totalPages);
+          const components = buildSalesComponents(targetCc, targetPage, data.totalPages, myEpoch);
+          const payload = { embeds: [embed], components };
+
+          for (const job of jobs) {
+            try {
+              await job.interaction.editReply(payload);
+            } catch (err) {
+              SALES_TAG.debug(
+                `Failed to edit sales nav reply for interaction ${job.interaction?.id || 'unknown'}: ${err?.message || err}`
+              );
+            }
+          }
+
+          prewarmAround(targetCc, targetPage, data.totalPages);
+        });
+      } catch (err) {
+        SALES_TAG.error('button handler error:', err?.stack || err);
+        const errorPayload = { content: `Error: ${err.message || err}`, components: [] };
+        for (const job of jobs) {
+          try {
+            await job.interaction.editReply(errorPayload);
+          } catch (err2) {
+            SALES_TAG.debug(
+              `Failed to send sales nav error reply for interaction ${job.interaction?.id || 'unknown'}: ${err2?.message || err2}`
+            );
+          }
+        }
+      }
+    }
+  } finally {
+    state.running = false;
+    if (!state.jobs.length) {
+      navQueues.delete(messageId);
+    }
+  }
+}
 
 function buildSalesEmbed(cc, pageIndex, items, totalPages) {
   const lines = items.length ? items.map(saleItemToLine).join('\n\n') : '_No discounted games found._';
@@ -425,31 +509,33 @@ async function handleButtonInteraction(interaction) {
   if (!id.startsWith('sales_nav:')) return;
 
   const parts = id.split(':');
-  if (parts.length < 4) return interaction.reply({ content: 'Malformed button.', ephemeral: true }).catch(()=>{});
+  if (parts.length < 4) {
+    await interaction.reply({ content: 'Malformed button.', ephemeral: true }).catch(()=>{});
+    return;
+  }
 
   const cc = parts[1] || SALES_REGION_CC;
   const requestedPage = Math.max(0, Number(parts[2] || 0));
   const msgId = interaction.message?.id;
-  if (!msgId) return interaction.reply({ content: 'Missing message context.', ephemeral: true }).catch(()=>{});
-
-  const myEpoch = (navEpoch.get(msgId) || 0) + 1;
-  navEpoch.set(msgId, myEpoch);
-
-  await interaction.deferUpdate().catch(()=>{});
-
-  try {
-    const data = await getPageData(cc, requestedPage);
-    if ((navEpoch.get(msgId) || 0) !== myEpoch) return;
-
-    const embed = buildSalesEmbed(cc, requestedPage, data.items, data.totalPages);
-    const components = buildSalesComponents(cc, requestedPage, data.totalPages, myEpoch);
-    await interaction.editReply({ embeds: [embed], components }).catch(()=>{});
-
-    prewarmAround(cc, requestedPage, data.totalPages);
-  } catch (e) {
-    SALES_TAG.error('button handler error:', e?.stack || e);
-    try { await interaction.editReply({ content: `Error: ${e.message || e}`, components: [] }); } catch {}
+  if (!msgId) {
+    await interaction.reply({ content: 'Missing message context.', ephemeral: true }).catch(()=>{});
+    return;
   }
+
+  const acked = await interaction.deferUpdate().then(() => true).catch((err) => {
+    SALES_TAG.debug(`Failed to defer sales nav interaction: ${err?.message || err}`);
+    return false;
+  });
+  if (!acked) {
+    return;
+  }
+
+  const state = getNavQueueState(msgId);
+  state.jobs.push({ interaction, cc, page: requestedPage });
+
+  processNavQueue(msgId).catch((err) => {
+    SALES_TAG.error('processNavQueue error:', err?.stack || err);
+  });
 }
 
 let fullWarmTimer = null;
