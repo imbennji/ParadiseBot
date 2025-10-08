@@ -577,25 +577,61 @@ async function handleClearChat(interaction) {
   await interaction.deferReply({ ephemeral: true });
 
   let remaining = lines;
-  const chunkSize = 50;
-  const blankLine = '\u200B';
+  let deletedCount = 0;
+  let cursor;
 
   try {
     while (remaining > 0) {
-      const portion = Math.min(remaining, chunkSize);
-      const content = Array.from({ length: portion }, () => blankLine).join('\n');
-      await channel.send({ content });
-      remaining -= portion;
+      const fetchSize = Math.min(remaining, 100);
+      const fetched = await channel.messages.fetch({ limit: fetchSize, before: cursor }).catch(err => {
+        log.tag('CMD:clearchat').warn(`guild=${interaction.guildId} channel=${channel.id} fetch failed:`, err?.stack || err);
+        throw err;
+      });
+
+      if (fetched.size === 0) {
+        break;
+      }
+
+      // Delete from newest to oldest to avoid hitting rate limits when paginating.
+      for (const message of fetched.values()) {
+        if (remaining <= 0) {
+          break;
+        }
+
+        if (!message.deletable) {
+          continue;
+        }
+
+        const success = await message.delete().then(() => true).catch(err => {
+          log.tag('CMD:clearchat').warn(`guild=${interaction.guildId} channel=${channel.id} delete failed message=${message.id}:`, err?.stack || err);
+          return false;
+        });
+
+        if (success) {
+          remaining -= 1;
+          deletedCount += 1;
+        }
+      }
+
+      cursor = fetched.lastKey();
+
+      if (!cursor) {
+        break;
+      }
     }
   } catch (err) {
-    log.tag('CMD:clearchat').warn(`guild=${interaction.guildId} channel=${channel.id} failed:`, err?.stack || err);
-    return interaction.editReply('I could not post the clearing message. Please try again later.');
+    return interaction.editReply('I ran into an error while removing messages. Please try again later.');
   }
 
-  log.tag('CMD:clearchat').info(`guild=${interaction.guildId} moderator=${interaction.user.id} channel=${channel.id} lines=${lines}`);
+  if (deletedCount === 0) {
+    return interaction.editReply('I could not remove any messages. They might be too old or not deletable.');
+  }
+
+  log.tag('CMD:clearchat').info(`guild=${interaction.guildId} moderator=${interaction.user.id} channel=${channel.id} requested=${lines} deleted=${deletedCount}`);
 
   const suffix = limited ? ' (Limited to 200 lines.)' : '';
-  await interaction.editReply(`🧼 Posted ${lines} blank line(s) to clear the chat.${suffix}`);
+  const short = deletedCount < lines ? ' Some messages could not be removed.' : '';
+  await interaction.editReply(`🧼 Deleted ${deletedCount} message(s).${suffix}${short}`);
 }
 
 async function handleWarn(interaction) {
