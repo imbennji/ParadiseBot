@@ -345,6 +345,38 @@ function buildSalesComponents(cc, pageIndex, totalPages, epoch) {
   return [ new ActionRowBuilder().addComponents(prevBtn, nextBtn) ];
 }
 
+function disableSalesComponentsFromMessage(message) {
+  const rows = message?.components;
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+
+  const disabledRows = [];
+  for (const row of rows) {
+    const newRow = new ActionRowBuilder();
+    for (const component of row.components || []) {
+      if (component.type !== 2) continue; // Only buttons are expected.
+
+      const builder = new ButtonBuilder();
+
+      if (component.customId) builder.setCustomId(component.customId);
+      if (component.url) builder.setURL(component.url);
+      if (component.label) builder.setLabel(component.label);
+      if (component.emoji) builder.setEmoji(component.emoji);
+
+      builder.setStyle(component.style);
+      if (component.style !== ButtonStyle.Link) {
+        builder.setDisabled(true);
+      }
+
+      newRow.addComponents(builder);
+    }
+    if (newRow.components.length > 0) {
+      disabledRows.push(newRow);
+    }
+  }
+
+  return disabledRows;
+}
+
 function prewarmAround(cc, pageIndex, totalPages) {
   const upcoming = [];
   for (let i = 1; i <= SALES_PRECACHE_PAGES; i++) {
@@ -492,6 +524,11 @@ async function handleButtonInteraction(interaction) {
     await withNavLock(msgId, async () => {
       const myEpoch = (navEpoch.get(msgId) || 0) + 1;
       navEpoch.set(msgId, myEpoch);
+
+      const disabledComponents = disableSalesComponentsFromMessage(interaction.message);
+      if (disabledComponents.length > 0) {
+        await interaction.editReply({ components: disabledComponents });
+      }
 
       const data = await getPageData(cc, requestedPage);
       if ((navEpoch.get(msgId) || 0) !== myEpoch) return;
