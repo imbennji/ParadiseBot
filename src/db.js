@@ -142,6 +142,16 @@ async function initDb() {
   `);
 
   await dbRun(`
+    CREATE TABLE IF NOT EXISTS link_permits (
+      guild_id   VARCHAR(32) NOT NULL,
+      user_id    VARCHAR(32) NOT NULL,
+      granted_by VARCHAR(32) NOT NULL,
+      expires_at BIGINT NOT NULL,
+      PRIMARY KEY (guild_id, user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+
+  await dbRun(`
     CREATE TABLE IF NOT EXISTS xp_progress (
       guild_id        VARCHAR(32) NOT NULL,
       user_id         VARCHAR(32) NOT NULL,

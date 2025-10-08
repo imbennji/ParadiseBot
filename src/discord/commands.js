@@ -27,6 +27,7 @@ const {
   getRecentlyPlayed,
 } = require('../steam/api');
 const { getRankStats } = require('./xp');
+const { grantLinkPermit, PERMIT_DURATION_MS } = require('./permits');
 
 const commandBuilders = [
   new SlashCommandBuilder()
@@ -90,6 +91,16 @@ const commandBuilders = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
     .setDMPermission(false)
     .addSubcommand(sc => sc.setName('init').setDescription('Create/move the Steam Game Sales embed to this channel')),
+  new SlashCommandBuilder()
+    .setName('permit')
+    .setDescription('Temporarily allow a member to post links')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages)
+    .setDMPermission(false)
+    .addUserOption(opt =>
+      opt.setName('user')
+        .setDescription('Who to permit')
+        .setRequired(true)
+    ),
   new SlashCommandBuilder()
     .setName('rank')
     .setDescription('Check Paradise XP levels')
@@ -558,6 +569,25 @@ async function handleWarn(interaction) {
   await interaction.editReply(`⚠️ Warned ${user.tag}.${dmResult ? ' They were notified via DM.' : ' I could not DM them.'}`);
 }
 
+async function handlePermit(interaction) {
+  if (!interaction.guild) {
+    return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const target = interaction.options.getUser('user', true);
+  if (target.bot) {
+    return interaction.editReply('Bots do not need permits.');
+  }
+
+  const expiresAt = await grantLinkPermit(interaction.guildId, target.id, interaction.user.id, PERMIT_DURATION_MS);
+  const expiresIn = new Date(expiresAt).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const minutes = Math.round(PERMIT_DURATION_MS / 60000);
+
+  await interaction.editReply(`✅ ${target} can post links for the next ${minutes} minutes (until ~${expiresIn}).`);
+}
+
 async function handleRank(interaction) {
   const target = interaction.options.getUser('user') || interaction.user;
   const stats = await getRankStats(interaction.guildId, target.id);
@@ -592,6 +622,7 @@ async function handleChatCommand(interaction) {
     case 'timeout':      await handleTimeout(interaction);     break;
     case 'purge':        await handlePurge(interaction);       break;
     case 'warn':         await handleWarn(interaction);        break;
+    case 'permit':       await handlePermit(interaction);      break;
   }
 }
 
