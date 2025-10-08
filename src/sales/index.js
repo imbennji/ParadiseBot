@@ -531,11 +531,17 @@ async function handleButtonInteraction(interaction) {
     }
   }
 
+  const placeholderLock = Promise.resolve();
+  navLocks.set(msgId, placeholderLock);
+
   const acked = await interaction.deferUpdate().then(() => true).catch((err) => {
     SALES_TAG.debug(`Failed to defer sales nav interaction: ${err?.message || err}`);
     return false;
   });
   if (!acked) {
+    if (navLocks.get(msgId) === placeholderLock) {
+      navLocks.delete(msgId);
+    }
     return;
   }
 
@@ -567,6 +573,10 @@ async function handleButtonInteraction(interaction) {
   } catch (e) {
     SALES_TAG.error('button handler error:', e?.stack || e);
     try { await interaction.editReply({ content: `Error: ${e.message || e}`, components: [] }); } catch {}
+  } finally {
+    if (navLocks.get(msgId) === placeholderLock) {
+      navLocks.delete(msgId);
+    }
   }
 }
 
