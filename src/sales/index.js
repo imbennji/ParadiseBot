@@ -306,10 +306,15 @@ function getNavState(messageId) {
       limit: pLimit(1),
       cooldownUntil: 0,
       userCooldowns: new Map(),
+      pendingRequests: new Set(),
       inflightKey: null,
       cleanupTimer: null,
     };
     navState.set(messageId, state);
+  }
+
+  if (!state.pendingRequests) {
+    state.pendingRequests = new Set();
   }
 
   if (state.cleanupTimer) {
@@ -618,11 +623,8 @@ async function handleButtonInteraction(interaction) {
   }
 
   const requestKey = `${requestedPage}:${epoch}`;
-  if (state.inflightKey && state.inflightKey.key === requestKey) {
-    const acked = await safeDeferUpdate(interaction);
-    if (acked) {
-      await safeFollowUp(interaction, { content: 'Still updating that page. Hang tight!', ephemeral: true });
-    }
+  if (state.pendingRequests.has(requestKey)) {
+    await safeReply(interaction, { content: 'Still updating that page. Hang tight!', ephemeral: true });
     return;
   }
 
@@ -630,13 +632,13 @@ async function handleButtonInteraction(interaction) {
   const acked = await safeDeferUpdate(interaction);
   if (!acked) return;
 
-  if (willQueue) {
-    await safeFollowUp(interaction, { content: 'Hold on, finishing the previous update…', ephemeral: true });
-  } else {
-    await safeFollowUp(interaction, { content: 'Updating sales page…', ephemeral: true });
-  }
+  state.pendingRequests.add(requestKey);
 
   try {
+    if (willQueue) {
+      await safeFollowUp(interaction, { content: 'Hold on, finishing the previous update…', ephemeral: true });
+    }
+
     await state.limit(async () => {
       state.inflightKey = { key: requestKey, startedAt: Date.now() };
       try {
@@ -687,6 +689,8 @@ async function handleButtonInteraction(interaction) {
     await safeEditReply(interaction, { content: `Error: ${e.message || e}`, components: [] });
     state.cooldownUntil = 0;
     if (userId) state.userCooldowns.delete(userId);
+  } finally {
+    state.pendingRequests.delete(requestKey);
   }
 }
 
