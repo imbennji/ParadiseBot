@@ -34,6 +34,7 @@ const {
 } = require('./src/config');
 const { client } = require('./src/discord/client');
 const { registerCommandsOnStartup, handleChatCommand } = require('./src/discord/commands');
+const { awardMessageXp } = require('./src/discord/xp');
 const { scheduleAchievementsLoop } = require('./src/loops/achievements');
 const { scheduleOwnedLoop } = require('./src/loops/owned');
 const { scheduleNowPlayingLoop } = require('./src/loops/nowPlaying');
@@ -126,6 +127,14 @@ client.on('interactionCreate', async (interaction) => {
     } else {
       await interaction.reply({ content: `❌ ${err.message || err}`, ephemeral: true }).catch(()=>{});
     }
+  }
+});
+
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    await awardMessageXp(message);
+  } catch (err) {
+    log.tag('XP').error('Failed to award message XP:', err?.stack || err);
   }
 });
 

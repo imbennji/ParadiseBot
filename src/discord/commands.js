@@ -26,11 +26,12 @@ const {
   resolveSteamId,
   getRecentlyPlayed,
 } = require('../steam/api');
+const { getRankStats } = require('./xp');
 
 const commandBuilders = [
   new SlashCommandBuilder()
     .setName('setchannel')
-    .setDescription('Set the channel for Steam announcements')
+    .setDescription('Set the channel for Paradise Bot announcements')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
     .setDMPermission(false)
     .addStringOption(opt =>
@@ -45,6 +46,7 @@ const commandBuilders = [
           { name: 'library_removals',       value: CHANNEL_KINDS.LIBRARY },
           { name: 'leaderboard',            value: CHANNEL_KINDS.LEADERBOARD },
           { name: 'steam_game_sales',       value: CHANNEL_KINDS.SALES },
+          { name: 'xp_levelups',            value: CHANNEL_KINDS.XP },
         )
     )
     .addChannelOption(opt =>
@@ -87,6 +89,15 @@ const commandBuilders = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
     .setDMPermission(false)
     .addSubcommand(sc => sc.setName('init').setDescription('Create/move the Steam Game Sales embed to this channel')),
+  new SlashCommandBuilder()
+    .setName('rank')
+    .setDescription('Check Paradise XP levels')
+    .setDMPermission(false)
+    .addUserOption(opt =>
+      opt.setName('user')
+        .setDescription('Who to inspect (defaults to yourself)')
+        .setRequired(false)
+    ),
 ];
 
 const commands = commandBuilders.map(c => c.toJSON());
@@ -242,6 +253,26 @@ async function handleSalesCmd(interaction) {
   }
 }
 
+async function handleRank(interaction) {
+  const target = interaction.options.getUser('user') || interaction.user;
+  const stats = await getRankStats(interaction.guildId, target.id);
+
+  if (!stats) {
+    const content = target.id === interaction.user.id
+      ? 'You have not earned any Paradise XP yet. Start chatting to level up!'
+      : `${target} has not earned any Paradise XP yet.`;
+    return interaction.reply({ content, ephemeral: true });
+  }
+
+  const { level, totalXp, xpIntoLevel, xpForNextLevel, xpToNextLevel } = stats;
+  const subject = target.id === interaction.user.id ? 'You are' : `${target} is`;
+  const progress = `${xpIntoLevel}/${xpForNextLevel} XP (${xpToNextLevel} XP to go)`;
+
+  return interaction.reply({
+    content: `${subject} level **${level}** with **${totalXp}** XP. Progress to next level: ${progress}.`,
+  });
+}
+
 async function handleChatCommand(interaction) {
   switch (interaction.commandName) {
     case 'setchannel':   await handleSetChannel(interaction);  break;
@@ -250,6 +281,7 @@ async function handleChatCommand(interaction) {
     case 'pingsteam':    await handlePingSteam(interaction);   break;
     case 'leaderboard':  await handleLeaderboard(interaction); break;
     case 'sales':        await handleSalesCmd(interaction);    break;
+    case 'rank':         await handleRank(interaction);        break;
   }
 }
 
