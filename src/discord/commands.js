@@ -99,6 +99,109 @@ const commandBuilders = [
         .setDescription('Who to inspect (defaults to yourself)')
         .setRequired(false)
     ),
+  new SlashCommandBuilder()
+    .setName('kick')
+    .setDescription('Kick a member from this server')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.KickMembers)
+    .setDMPermission(false)
+    .addUserOption(opt =>
+      opt.setName('user')
+        .setDescription('Who to kick')
+        .setRequired(true)
+    )
+    .addStringOption(opt =>
+      opt.setName('reason')
+        .setDescription('Optional reason (shown in audit log & DM)')
+        .setMaxLength(350)
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('ban')
+    .setDescription('Ban a member from this server')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.BanMembers)
+    .setDMPermission(false)
+    .addUserOption(opt =>
+      opt.setName('user')
+        .setDescription('Who to ban')
+        .setRequired(true)
+    )
+    .addIntegerOption(opt =>
+      opt.setName('delete_messages')
+        .setDescription('Delete message history (0-7 days)')
+        .setMinValue(0)
+        .setMaxValue(7)
+        .setRequired(false)
+    )
+    .addStringOption(opt =>
+      opt.setName('reason')
+        .setDescription('Optional reason (shown in audit log & DM)')
+        .setMaxLength(350)
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('timeout')
+    .setDescription('Temporarily timeout a member')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ModerateMembers)
+    .setDMPermission(false)
+    .addUserOption(opt =>
+      opt.setName('user')
+        .setDescription('Who to timeout')
+        .setRequired(true)
+    )
+    .addStringOption(opt =>
+      opt.setName('duration')
+        .setDescription('How long should the timeout last?')
+        .setRequired(true)
+        .addChoices(
+          { name: '5 minutes',  value: '5m' },
+          { name: '10 minutes', value: '10m' },
+          { name: '1 hour',     value: '1h' },
+          { name: '6 hours',    value: '6h' },
+          { name: '12 hours',   value: '12h' },
+          { name: '1 day',      value: '1d' },
+          { name: '3 days',     value: '3d' },
+          { name: '1 week',     value: '7d' }
+        )
+    )
+    .addStringOption(opt =>
+      opt.setName('reason')
+        .setDescription('Optional reason (shown in audit log & DM)')
+        .setMaxLength(350)
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('purge')
+    .setDescription('Bulk delete recent messages in this channel')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages)
+    .setDMPermission(false)
+    .addIntegerOption(opt =>
+      opt.setName('count')
+        .setDescription('How many messages to delete (max 100)')
+        .setMinValue(1)
+        .setMaxValue(100)
+        .setRequired(true)
+    )
+    .addUserOption(opt =>
+      opt.setName('user')
+        .setDescription('Only delete messages from this user')
+        .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('warn')
+    .setDescription('Send a warning DM to a member')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages)
+    .setDMPermission(false)
+    .addUserOption(opt =>
+      opt.setName('user')
+        .setDescription('Who to warn')
+        .setRequired(true)
+    )
+    .addStringOption(opt =>
+      opt.setName('reason')
+        .setDescription('Why are they being warned?')
+        .setMaxLength(350)
+        .setRequired(true)
+    ),
 ];
 
 const commands = commandBuilders.map(c => c.toJSON());
@@ -254,6 +357,207 @@ async function handleSalesCmd(interaction) {
   }
 }
 
+function getAuditReason(interaction, reason) {
+  const base = reason?.trim() ? reason.trim() : 'No reason provided';
+  const actor = `${interaction.user.tag ?? interaction.user.username} (${interaction.user.id})`;
+  return `${actor}: ${base}`.slice(0, 512);
+}
+
+function ensureCanActOn(interaction, member) {
+  if (!member) return true;
+  if (member.id === interaction.user.id) return false;
+  if (member.id === interaction.client.user.id) return false;
+  if (member.id === interaction.guild.ownerId) return false;
+
+  const moderator = interaction.member;
+  if (!moderator || !moderator.roles || !member.roles) return true;
+  if (interaction.user.id === interaction.guild.ownerId) return true;
+
+  try {
+    return moderator.roles.highest.comparePositionTo(member.roles.highest) > 0;
+  } catch (err) {
+    log.tag('CMD:mod').warn('Role comparison failed:', err?.stack || err);
+    return true;
+  }
+}
+
+async function handleKick(interaction) {
+  if (!interaction.guild) {
+    return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const user = interaction.options.getUser('user', true);
+  const reason = interaction.options.getString('reason')?.trim() || 'No reason provided';
+  const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+
+  if (!member) {
+    return interaction.editReply('That user is not in this server.');
+  }
+  if (!ensureCanActOn(interaction, member)) {
+    return interaction.editReply('You cannot take action on that member.');
+  }
+  if (!member.kickable) {
+    return interaction.editReply('I do not have permission to kick that member.');
+  }
+
+  await member.kick(getAuditReason(interaction, reason));
+  log.tag('CMD:kick').info(`guild=${interaction.guildId} target=${member.id} moderator=${interaction.user.id}`);
+
+  await interaction.editReply(`👢 Kicked ${member.user.tag}. Reason: ${reason}`);
+
+  await member.user.send(`You have been kicked from **${interaction.guild.name}**. Reason: ${reason}`).catch(() => {});
+}
+
+const BAN_DELETE_SECONDS = 24 * 60 * 60;
+
+async function handleBan(interaction) {
+  if (!interaction.guild) {
+    return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const user = interaction.options.getUser('user', true);
+  const reason = interaction.options.getString('reason')?.trim() || 'No reason provided';
+  const deleteDays = interaction.options.getInteger('delete_messages') ?? 0;
+
+  if (user.id === interaction.user.id) {
+    return interaction.editReply('You cannot ban yourself.');
+  }
+  if (user.id === interaction.client.user.id) {
+    return interaction.editReply('Nice try, but I cannot ban myself.');
+  }
+
+  const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+  if (member) {
+    if (!ensureCanActOn(interaction, member)) {
+      return interaction.editReply('You cannot take action on that member.');
+    }
+    if (!member.bannable) {
+      return interaction.editReply('I do not have permission to ban that member.');
+    }
+  }
+
+  const deleteMessageSeconds = Math.max(0, Math.min(deleteDays, 7)) * BAN_DELETE_SECONDS;
+
+  await interaction.guild.members.ban(user.id, {
+    reason: getAuditReason(interaction, reason),
+    deleteMessageSeconds,
+  });
+
+  log.tag('CMD:ban').info(`guild=${interaction.guildId} target=${user.id} moderator=${interaction.user.id} deleteDays=${deleteDays}`);
+
+  await interaction.editReply(`🔨 Banned ${user.tag}. Reason: ${reason}. Deleted ${deleteDays} day(s) of messages.`);
+
+  await user.send(`You have been banned from **${interaction.guild.name}**. Reason: ${reason}`).catch(() => {});
+}
+
+const TIMEOUT_DURATIONS = {
+  '5m': 5 * 60 * 1000,
+  '10m': 10 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+  '6h': 6 * 60 * 60 * 1000,
+  '12h': 12 * 60 * 60 * 1000,
+  '1d': 24 * 60 * 60 * 1000,
+  '3d': 3 * 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+};
+
+async function handleTimeout(interaction) {
+  if (!interaction.guild) {
+    return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const user = interaction.options.getUser('user', true);
+  const durationKey = interaction.options.getString('duration', true);
+  const reason = interaction.options.getString('reason')?.trim() || 'No reason provided';
+  const duration = TIMEOUT_DURATIONS[durationKey];
+
+  if (!duration) {
+    return interaction.editReply('Unknown timeout duration.');
+  }
+
+  const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+  if (!member) {
+    return interaction.editReply('That user is not in this server.');
+  }
+  if (!ensureCanActOn(interaction, member)) {
+    return interaction.editReply('You cannot take action on that member.');
+  }
+  if (!member.moderatable) {
+    return interaction.editReply('I do not have permission to timeout that member.');
+  }
+
+  await member.timeout(duration, getAuditReason(interaction, reason));
+  log.tag('CMD:timeout').info(`guild=${interaction.guildId} target=${member.id} moderator=${interaction.user.id} duration=${durationKey}`);
+
+  await interaction.editReply(`⏱️ Timed out ${member.user.tag} for ${durationKey}. Reason: ${reason}`);
+
+  await member.user.send(`You have been timed out in **${interaction.guild.name}** for ${durationKey}. Reason: ${reason}`).catch(() => {});
+}
+
+async function handlePurge(interaction) {
+  if (!interaction.guild) {
+    return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
+  }
+
+  const channel = interaction.channel;
+  if (!channel || channel.type !== ChannelType.GuildText) {
+    return interaction.reply({ content: 'This command can only be used in text channels.', ephemeral: true });
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const count = interaction.options.getInteger('count', true);
+  const targetUser = interaction.options.getUser('user');
+
+  const fetched = await channel.messages.fetch({ limit: Math.min(Math.max(count, 1), 100) });
+  const filtered = targetUser ? fetched.filter(msg => msg.author.id === targetUser.id) : fetched;
+  const first = filtered.first(count);
+  const messagesToDelete = Array.isArray(first) ? first : first ? [first] : [];
+
+  if (messagesToDelete.length === 0) {
+    return interaction.editReply('No messages matched the criteria.');
+  }
+
+  const deleted = await channel.bulkDelete(messagesToDelete, true);
+  log.tag('CMD:purge').info(`guild=${interaction.guildId} moderator=${interaction.user.id} channel=${channel.id} deleted=${deleted.size}`);
+
+  const scope = targetUser ? ` from ${targetUser.tag}` : '';
+  await interaction.editReply(`🧹 Deleted ${deleted.size} message(s)${scope}.`);
+}
+
+async function handleWarn(interaction) {
+  if (!interaction.guild) {
+    return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const user = interaction.options.getUser('user', true);
+  const reason = interaction.options.getString('reason', true).trim();
+  const member = await interaction.guild.members.fetch(user.id).catch(() => null);
+
+  if (!member) {
+    return interaction.editReply('That user is not in this server.');
+  }
+
+  if (!ensureCanActOn(interaction, member)) {
+    return interaction.editReply('You cannot take action on that member.');
+  }
+
+  const dmMessage = `You have been warned in **${interaction.guild.name}**. Reason: ${reason}`;
+  const dmResult = await user.send(dmMessage).then(() => true).catch(() => false);
+
+  log.tag('CMD:warn').info(`guild=${interaction.guildId} target=${user.id} moderator=${interaction.user.id} dm=${dmResult}`);
+
+  await interaction.editReply(`⚠️ Warned ${user.tag}.${dmResult ? ' They were notified via DM.' : ' I could not DM them.'}`);
+}
+
 async function handleRank(interaction) {
   const target = interaction.options.getUser('user') || interaction.user;
   const stats = await getRankStats(interaction.guildId, target.id);
@@ -283,6 +587,11 @@ async function handleChatCommand(interaction) {
     case 'leaderboard':  await handleLeaderboard(interaction); break;
     case 'sales':        await handleSalesCmd(interaction);    break;
     case 'rank':         await handleRank(interaction);        break;
+    case 'kick':         await handleKick(interaction);        break;
+    case 'ban':          await handleBan(interaction);         break;
+    case 'timeout':      await handleTimeout(interaction);     break;
+    case 'purge':        await handlePurge(interaction);       break;
+    case 'warn':         await handleWarn(interaction);        break;
   }
 }
 
