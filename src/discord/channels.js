@@ -10,6 +10,7 @@ const CHANNEL_KINDS = {
   LEADERBOARD: 'leaderboard',
   SALES: 'steam_game_sales',
   XP: 'xp_levelups',
+  LOGGING: 'logging',
 };
 
 function normalizeKind(s) {
@@ -22,6 +23,7 @@ function normalizeKind(s) {
   if (['leaderboard','lb','boards'].includes(v)) return CHANNEL_KINDS.LEADERBOARD;
   if (['steam_sales','sales','store_sales','steam_sales_board','steam_game_sales'].includes(v)) return CHANNEL_KINDS.SALES;
   if (['xp','levels','level_ups','levelups','xp_levelups','xp_announcements'].includes(v)) return CHANNEL_KINDS.XP;
+  if (['log','logs','logging','mod_logs','server_logs'].includes(v)) return CHANNEL_KINDS.LOGGING;
   return null;
 }
 
