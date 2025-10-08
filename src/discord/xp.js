@@ -1,5 +1,6 @@
 const { log } = require('../logger');
 const { dbGet, dbRun } = require('../db');
+const { CHANNEL_KINDS, getAnnouncementChannel, hasBotPerms } = require('./channels');
 
 const XP_COOLDOWN_SECONDS = 60;
 const XP_MIN_PER_MESSAGE = 15;
@@ -77,8 +78,28 @@ async function awardMessageXp(message) {
   );
 
   if (leveledUp) {
+    let announceChannel = message.channel;
+
+    if (message.guild) {
+      try {
+        const configured = await getAnnouncementChannel(message.guild, CHANNEL_KINDS.XP);
+        if (configured) {
+          const perms = hasBotPerms(configured);
+          if (perms.ok) {
+            announceChannel = configured;
+          } else {
+            log.tag('XP').warn(
+              `Missing permissions in configured XP channel ${configured.id} for guild=${message.guildId}: ${perms.missing.join(', ')}`
+            );
+          }
+        }
+      } catch (err) {
+        log.tag('XP').warn('Failed to resolve XP announcement channel', err);
+      }
+    }
+
     try {
-      await message.channel.send({ content: `🎉 Congrats ${message.author}, you reached level **${level}**!` });
+      await announceChannel.send({ content: `🎉 Congrats ${message.author}, you reached level **${level}**!` });
     } catch (err) {
       log.tag('XP').warn('Failed to announce level up', err);
     }

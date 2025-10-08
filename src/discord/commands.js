@@ -31,7 +31,7 @@ const { getRankStats } = require('./xp');
 const commandBuilders = [
   new SlashCommandBuilder()
     .setName('setchannel')
-    .setDescription('Set the channel for Steam announcements')
+    .setDescription('Set the channel for Paradise Bot announcements')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
     .setDMPermission(false)
     .addStringOption(opt =>
@@ -46,6 +46,7 @@ const commandBuilders = [
           { name: 'library_removals',       value: CHANNEL_KINDS.LIBRARY },
           { name: 'leaderboard',            value: CHANNEL_KINDS.LEADERBOARD },
           { name: 'steam_game_sales',       value: CHANNEL_KINDS.SALES },
+          { name: 'xp_levelups',            value: CHANNEL_KINDS.XP },
         )
     )
     .addChannelOption(opt =>
