@@ -3,6 +3,7 @@ const cheerio = require('cheerio');
 const { wrapper: axiosCookieJarSupport } = require('axios-cookiejar-support');
 const tough = require('tough-cookie');
 const { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const pLimit = require('p-limit');
 const { log, time } = require('../logger');
 const { dbRun, dbGet } = require('../db');
 const { client } = require('../discord/client');
@@ -295,31 +296,104 @@ function saleItemToLine(it) {
 }
 
 const navEpoch = new Map();
-const navLocks = new Map();
-const navCooldownUntil = new Map();
+const navState = new Map();
+const NAV_STATE_TTL_MS = 10 * 60 * 1000;
 
-function clearCooldownIfExpired(messageId) {
-  const until = navCooldownUntil.get(messageId);
-  if (until && until <= Date.now()) {
-    navCooldownUntil.delete(messageId);
+function getNavState(messageId) {
+  let state = navState.get(messageId);
+  if (!state) {
+    state = {
+      limit: pLimit(1),
+      cooldownUntil: 0,
+      userCooldowns: new Map(),
+      inflightKey: null,
+      cleanupTimer: null,
+    };
+    navState.set(messageId, state);
+  }
+
+  if (state.cleanupTimer) {
+    clearTimeout(state.cleanupTimer);
+  }
+  const timer = setTimeout(() => {
+    if (navState.get(messageId) === state) {
+      navState.delete(messageId);
+    }
+  }, NAV_STATE_TTL_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+  state.cleanupTimer = timer;
+
+  return state;
+}
+
+function refreshCooldowns(state, now = Date.now()) {
+  if (state.cooldownUntil && state.cooldownUntil <= now) {
+    state.cooldownUntil = 0;
+  }
+  for (const [userId, until] of state.userCooldowns) {
+    if (!until || until <= now) {
+      state.userCooldowns.delete(userId);
+    }
   }
 }
 
-function withNavLock(messageId, fn) {
-  const previous = navLocks.get(messageId) || Promise.resolve();
-  let runPromise;
-  runPromise = (async () => {
-    try { await previous; } catch {}
-    try {
-      return await fn();
-    } finally {
-      if (navLocks.get(messageId) === runPromise) {
-        navLocks.delete(messageId);
-      }
+function isUnknownInteractionError(err) {
+  if (!err) return false;
+  const code = err.code ?? err?.rawError?.code ?? err?.data?.code;
+  return code === 10062;
+}
+
+async function safeReply(interaction, payload) {
+  try {
+    await interaction.reply(payload);
+    return true;
+  } catch (err) {
+    if (isUnknownInteractionError(err)) {
+      SALES_TAG.debug(`Ignored reply on expired interaction: ${err?.message || err}`);
+      return false;
     }
-  })();
-  navLocks.set(messageId, runPromise);
-  return runPromise;
+    throw err;
+  }
+}
+
+async function safeDeferUpdate(interaction) {
+  try {
+    await interaction.deferUpdate();
+    return true;
+  } catch (err) {
+    if (isUnknownInteractionError(err)) {
+      SALES_TAG.debug(`Interaction expired before defer: ${err?.message || err}`);
+      return false;
+    }
+    SALES_TAG.debug(`Failed to defer sales nav interaction: ${err?.message || err}`);
+    return false;
+  }
+}
+
+async function safeEditReply(interaction, payload) {
+  try {
+    await interaction.editReply(payload);
+    return true;
+  } catch (err) {
+    if (isUnknownInteractionError(err)) {
+      SALES_TAG.debug(`Ignored editReply on expired interaction: ${err?.message || err}`);
+      return false;
+    }
+    throw err;
+  }
+}
+
+async function safeFollowUp(interaction, payload) {
+  try {
+    await interaction.followUp(payload);
+    return true;
+  } catch (err) {
+    if (isUnknownInteractionError(err)) {
+      SALES_TAG.debug(`Ignored followUp on expired interaction: ${err?.message || err}`);
+      return false;
+    }
+    throw err;
+  }
 }
 
 function buildSalesEmbed(cc, pageIndex, items, totalPages) {
@@ -485,23 +559,35 @@ async function handleButtonInteraction(interaction) {
 
   const parts = id.split(':');
   if (parts.length < 4) {
-    await interaction.reply({ content: 'Malformed button.', ephemeral: true }).catch(()=>{});
+    await safeReply(interaction, { content: 'Malformed button.', ephemeral: true });
     return;
   }
 
   const cc = parts[1] || SALES_REGION_CC;
-  const requestedPage = Math.max(0, Number(parts[2] || 0));
-  const epoch = Number(parts[3] || 0);
-  const msgId = interaction.message?.id;
+  const requestedPageRaw = Number.parseInt(parts[2], 10);
+  const requestedPage = Number.isFinite(requestedPageRaw) ? Math.max(0, requestedPageRaw) : null;
+  const epoch = Number.parseInt(parts[3], 10);
+  const msgId = interaction.message?.id || null;
+  const userId = interaction.user?.id || interaction.member?.user?.id || null;
+
+  if (requestedPage === null) {
+    await safeReply(interaction, { content: 'Malformed button state.', ephemeral: true });
+    return;
+  }
+
   if (!msgId) {
-    await interaction.reply({ content: 'Missing message context.', ephemeral: true }).catch(()=>{});
+    await safeReply(interaction, { content: 'Missing message context.', ephemeral: true });
     return;
   }
 
   if (!Number.isFinite(epoch) || epoch <= 0) {
-    await interaction.reply({ content: 'Malformed button state.', ephemeral: true }).catch(()=>{});
+    await safeReply(interaction, { content: 'Malformed button state.', ephemeral: true });
     return;
   }
+
+  const state = getNavState(msgId);
+  const now = Date.now();
+  refreshCooldowns(state, now);
 
   let currentEpoch = navEpoch.get(msgId) || 0;
   if (currentEpoch === 0) {
@@ -513,70 +599,94 @@ async function handleButtonInteraction(interaction) {
     const message = epoch < currentEpoch
       ? 'Those buttons are a little out of date. Please use the refreshed buttons on the message.'
       : 'Please wait a moment for the current page update to finish.';
-    await interaction.reply({ content: message, ephemeral: true }).catch(()=>{});
-    return;
-  }
-
-  if (navLocks.has(msgId)) {
-    await interaction.reply({ content: 'Hold on, I’m still loading the last request. Try again in a moment.', ephemeral: true }).catch(()=>{});
+    await safeReply(interaction, { content: message, ephemeral: true });
     return;
   }
 
   if (SALES_NAV_COOLDOWN_MS > 0) {
-    clearCooldownIfExpired(msgId);
-    const nextAllowed = navCooldownUntil.get(msgId);
-    if (nextAllowed && nextAllowed > Date.now()) {
-      await interaction.reply({ content: 'Please wait a moment before changing pages again.', ephemeral: true }).catch(()=>{});
+    if (state.cooldownUntil && state.cooldownUntil > now) {
+      await safeReply(interaction, { content: 'Please wait a moment before changing pages again.', ephemeral: true });
       return;
     }
+    if (userId) {
+      const userUntil = state.userCooldowns.get(userId);
+      if (userUntil && userUntil > now) {
+        await safeReply(interaction, { content: 'You are clicking a little quickly—please wait just a moment.', ephemeral: true });
+        return;
+      }
+    }
   }
 
-  const placeholderLock = Promise.resolve();
-  navLocks.set(msgId, placeholderLock);
-
-  const acked = await interaction.deferUpdate().then(() => true).catch((err) => {
-    SALES_TAG.debug(`Failed to defer sales nav interaction: ${err?.message || err}`);
-    return false;
-  });
-  if (!acked) {
-    if (navLocks.get(msgId) === placeholderLock) {
-      navLocks.delete(msgId);
+  const requestKey = `${requestedPage}:${epoch}`;
+  if (state.inflightKey && state.inflightKey.key === requestKey) {
+    const acked = await safeDeferUpdate(interaction);
+    if (acked) {
+      await safeFollowUp(interaction, { content: 'Still updating that page. Hang tight!', ephemeral: true });
     }
     return;
   }
 
-  if (SALES_NAV_COOLDOWN_MS > 0) {
-    const until = Date.now() + SALES_NAV_COOLDOWN_MS;
-    navCooldownUntil.set(msgId, until);
-    setTimeout(() => clearCooldownIfExpired(msgId), SALES_NAV_COOLDOWN_MS * 2);
+  const willQueue = (typeof state.limit?.activeCount === 'number') ? state.limit.activeCount > 0 : false;
+  const acked = await safeDeferUpdate(interaction);
+  if (!acked) return;
+
+  if (willQueue) {
+    await safeFollowUp(interaction, { content: 'Hold on, finishing the previous update…', ephemeral: true });
+  } else {
+    await safeFollowUp(interaction, { content: 'Updating sales page…', ephemeral: true });
   }
 
   try {
-    await withNavLock(msgId, async () => {
-      const myEpoch = (navEpoch.get(msgId) || 0) + 1;
-      navEpoch.set(msgId, myEpoch);
+    await state.limit(async () => {
+      state.inflightKey = { key: requestKey, startedAt: Date.now() };
+      try {
+        if (SALES_NAV_COOLDOWN_MS > 0 && state.cooldownUntil && state.cooldownUntil > Date.now()) {
+          await safeFollowUp(interaction, { content: 'That update just finished. Please try again in a moment.', ephemeral: true });
+          return;
+        }
 
-      const disabledComponents = disableSalesComponentsFromMessage(interaction.message);
-      if (disabledComponents.length > 0) {
-        await interaction.editReply({ components: disabledComponents });
+        const myEpoch = (navEpoch.get(msgId) || 0) + 1;
+        navEpoch.set(msgId, myEpoch);
+
+        const disabledComponents = disableSalesComponentsFromMessage(interaction.message);
+        if (disabledComponents.length > 0) {
+          const ok = await safeEditReply(interaction, { components: disabledComponents });
+          if (!ok) return;
+        }
+
+        const data = await getPageData(cc, requestedPage);
+        if ((navEpoch.get(msgId) || 0) !== myEpoch) return;
+
+        const embed = buildSalesEmbed(cc, requestedPage, data.items, data.totalPages);
+        const components = buildSalesComponents(cc, requestedPage, data.totalPages, myEpoch);
+        const edited = await safeEditReply(interaction, { embeds: [embed], components });
+        if (!edited) return;
+
+        prewarmAround(cc, requestedPage, data.totalPages);
+
+        if (SALES_NAV_COOLDOWN_MS > 0) {
+          const until = Date.now() + SALES_NAV_COOLDOWN_MS;
+          state.cooldownUntil = until;
+          if (userId) {
+            state.userCooldowns.set(userId, until);
+          }
+        }
+      } finally {
+        state.inflightKey = null;
       }
-
-      const data = await getPageData(cc, requestedPage);
-      if ((navEpoch.get(msgId) || 0) !== myEpoch) return;
-
-      const embed = buildSalesEmbed(cc, requestedPage, data.items, data.totalPages);
-      const components = buildSalesComponents(cc, requestedPage, data.totalPages, myEpoch);
-      await interaction.editReply({ embeds: [embed], components });
-
-      prewarmAround(cc, requestedPage, data.totalPages);
     });
   } catch (e) {
-    SALES_TAG.error('button handler error:', e?.stack || e);
-    try { await interaction.editReply({ content: `Error: ${e.message || e}`, components: [] }); } catch {}
-  } finally {
-    if (navLocks.get(msgId) === placeholderLock) {
-      navLocks.delete(msgId);
+    if (isUnknownInteractionError(e)) {
+      SALES_TAG.debug(`Sales nav interaction expired mid-update: ${e?.message || e}`);
+      state.cooldownUntil = 0;
+      if (userId) state.userCooldowns.delete(userId);
+      return;
     }
+    SALES_TAG.error('button handler error:', e?.stack || e);
+    await safeFollowUp(interaction, { content: `Error: ${e.message || e}`, ephemeral: true });
+    await safeEditReply(interaction, { content: `Error: ${e.message || e}`, components: [] });
+    state.cooldownUntil = 0;
+    if (userId) state.userCooldowns.delete(userId);
   }
 }
 
