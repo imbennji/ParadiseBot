@@ -59,6 +59,7 @@ function buildUserFooter(user, extra, fallbackId) {
 
 async function handleMemberAdd(member) {
   const user = member.user ?? null;
+  if (user?.bot) return;
   await dispatchLog(member.guild, () => {
     const joinedAt = member.joinedAt ? new Date(member.joinedAt) : new Date();
     const embed = baseEmbed()
@@ -99,6 +100,7 @@ async function handleMemberAdd(member) {
 
 async function handleMemberRemove(member) {
   const user = member.user ?? null;
+  if (user?.bot) return;
   await dispatchLog(member.guild, () => {
     const embed = baseEmbed()
       .setColor(Colors.Red)
