@@ -150,6 +150,64 @@ async function announceCommits(commits, targets) {
   }
 }
 
+async function handlePushWebhook(payload) {
+  if (!GITHUB_ANNOUNCER_ENABLED) {
+    log.tag('GITHUB').debug('Ignoring GitHub webhook because announcer is disabled.');
+    return;
+  }
+  if (!repoSlug) {
+    log.tag('GITHUB').warn('Received GitHub webhook but repository is not configured.');
+    return;
+  }
+  if (!payload || typeof payload !== 'object') {
+    log.tag('GITHUB').warn('Received empty GitHub webhook payload.');
+    return;
+  }
+
+  const repoName = payload.repository?.full_name;
+  if (repoName && repoName.toLowerCase() !== repoSlug.toLowerCase()) {
+    log.tag('GITHUB').debug(`Ignoring webhook for repo=${repoName}; configured repo=${repoSlug}.`);
+    return;
+  }
+
+  if (GITHUB_BRANCH) {
+    const expectedRef = `refs/heads/${GITHUB_BRANCH}`;
+    if (payload.ref && payload.ref !== expectedRef) {
+      log.tag('GITHUB').debug(`Ignoring webhook for ref=${payload.ref}; expected ${expectedRef}.`);
+      return;
+    }
+  }
+
+  const rawCommits = Array.isArray(payload.commits) ? payload.commits : [];
+  if (!rawCommits.length) {
+    log.tag('GITHUB').info('GitHub webhook received with no commits to announce.');
+    return;
+  }
+
+  const commits = rawCommits
+    .slice()
+    .sort((a, b) => {
+      const at = a?.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const bt = b?.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return at - bt;
+    })
+    .map((commit) => ({ sha: commit.id || commit.sha || null }))
+    .filter((commit) => typeof commit.sha === 'string' && commit.sha.length);
+
+  if (!commits.length) {
+    log.tag('GITHUB').warn('GitHub webhook commits missing SHA identifiers; nothing to announce.');
+    return;
+  }
+
+  const targets = await resolveGithubChannels();
+  if (!targets.length) {
+    log.tag('GITHUB').debug('GitHub webhook received but no Discord channels are configured.');
+    return;
+  }
+
+  await announceCommits(commits, targets);
+}
+
 async function pollGithub() {
   const t = time('POLL:github');
   try {
@@ -207,4 +265,4 @@ function scheduleGithubLoop(runNow = false) {
   }
 }
 
-module.exports = { scheduleGithubLoop };
+module.exports = { scheduleGithubLoop, handlePushWebhook };

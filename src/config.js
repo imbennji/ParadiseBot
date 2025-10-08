@@ -32,6 +32,24 @@ const GITHUB_POLL_MS = Math.max(30, parseInt(process.env.GITHUB_POLL_SECONDS || 
 const GITHUB_ANNOUNCE_ON_START = (process.env.GITHUB_ANNOUNCE_ON_START ?? 'false').toLowerCase() === 'true';
 const GITHUB_MAX_CATCHUP = Math.max(1, parseInt(process.env.GITHUB_MAX_CATCHUP || '5', 10));
 const GITHUB_EMBED_COLOR = parseColor(process.env.GITHUB_EMBED_COLOR || '#24292E', 0x24292e);
+const GITHUB_WEBHOOK_ENABLED = (process.env.GITHUB_WEBHOOK_ENABLED ?? 'false').toLowerCase() === 'true';
+const GITHUB_WEBHOOK_PORT = parsePort(process.env.GITHUB_WEBHOOK_PORT || null);
+const GITHUB_WEBHOOK_PATH = normalizeWebhookPath(process.env.GITHUB_WEBHOOK_PATH);
+const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null;
+
+function parsePort(input) {
+  if (!input) return null;
+  const n = Number.parseInt(String(input), 10);
+  if (!Number.isFinite(n) || n <= 0 || n > 65535) return null;
+  return n;
+}
+
+function normalizeWebhookPath(input) {
+  if (!input) return '/github-webhook';
+  const trimmed = String(input).trim();
+  if (!trimmed) return '/github-webhook';
+  return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
 
 function parseColor(input, fallbackInt) {
   try {
@@ -141,4 +159,8 @@ module.exports = {
   GITHUB_ANNOUNCE_ON_START,
   GITHUB_MAX_CATCHUP,
   GITHUB_EMBED_COLOR,
+  GITHUB_WEBHOOK_ENABLED,
+  GITHUB_WEBHOOK_PORT,
+  GITHUB_WEBHOOK_PATH,
+  GITHUB_WEBHOOK_SECRET,
 };
