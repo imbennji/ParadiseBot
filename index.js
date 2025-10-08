@@ -129,9 +129,11 @@ const STEAM_COLOR = parseColor(process.env.STEAM_EMBED_COLOR || '#171A21', 0x171
 const SALES_REGION_CC = process.env.SALES_REGION_CC || 'US';
 const SALES_PAGE_SIZE = Math.max(5, parseInt(process.env.SALES_PAGE_SIZE || '10', 10));
 const SALES_PRECACHE_PAGES = Math.max(0, parseInt(process.env.SALES_PRECACHE_PAGES || '10', 10));
+const SALES_PRECACHE_PREV_PAGES = Math.max(0, parseInt(process.env.SALES_PRECACHE_PREV_PAGES || '2', 10));
 const SALES_PAGE_TTL_MS = Math.max(60_000, parseInt(process.env.SALES_PAGE_TTL_MS || '1200000', 10)); // 20m
 const SALES_MAX_PAGES_CACHE = Math.max(50, parseInt(process.env.SALES_MAX_PAGES_CACHE || '400', 10));
 const SALES_PREWARM_SPACING_MS = Math.max(250, parseInt(process.env.SALES_PREWARM_SPACING_MS || '800', 10)); // avoid bursts
+const SALES_EXTEND_TTL_ON_HIT = (process.env.SALES_EXTEND_TTL_ON_HIT ?? 'true').toLowerCase() !== 'false';
 
 // Eventual full warm:
 const SALES_FULL_WARMER_ENABLED = (process.env.SALES_FULL_WARMER_ENABLED ?? 'true').toLowerCase() !== 'false';
@@ -174,8 +176,8 @@ const SESSION_MIN_MINUTES            = Math.max(1, parseInt(process.env.SESSION_
 const RECENT_LIMIT = Math.max(3, parseInt(process.env.RECENT_LIMIT || '10', 10));
 
 log.info('Config:', JSON.stringify({
-  SALES_REGION_CC, SALES_PAGE_SIZE, SALES_PRECACHE_PAGES, SALES_PREWARM_SPACING_MS,
-  SALES_PAGE_TTL_MS, SALES_MAX_PAGES_CACHE,
+  SALES_REGION_CC, SALES_PAGE_SIZE, SALES_PRECACHE_PAGES, SALES_PRECACHE_PREV_PAGES, SALES_PREWARM_SPACING_MS,
+  SALES_PAGE_TTL_MS, SALES_MAX_PAGES_CACHE, SALES_EXTEND_TTL_ON_HIT,
   SALES_FULL_WARMER_ENABLED, SALES_FULL_WARMER_DELAY_MS, SALES_FULL_WARMER_SPACING_MS,
   POLL_MS, OWNED_POLL_MS, NOWPLAYING_POLL_MS, LEADERBOARD_POLL_MS, SALES_POLL_MS,
   CONCURRENCY, SCHEMA_TTL_MS, BACKFILL_LIMIT, DEBUG_LEVEL, DEBUG_HTTP, DEBUG_SQL
@@ -1572,6 +1574,7 @@ function parseSearchHtml(html) {
 
 /* LRU page cache (data only) */
 const pageCache = new Map(); // key -> { until, items, totalPages }
+const pageInflight = new Map(); // key -> Promise
 function lruTouch(key, val) {
   if (pageCache.has(key)) pageCache.delete(key);
   pageCache.set(key, val);
@@ -1583,12 +1586,19 @@ function lruTouch(key, val) {
 function cacheDataGet(cc, idx) {
   const key = `${cc}:${idx}`;
   const hit = pageCache.get(key);
-  if (hit && hit.until > Date.now()) return hit;
+  if (hit && hit.until > Date.now()) {
+    if (SALES_EXTEND_TTL_ON_HIT) hit.until = Date.now() + SALES_PAGE_TTL_MS;
+    lruTouch(key, hit);
+    return hit;
+  }
+  if (hit) pageCache.delete(key);
   return null;
 }
 function cacheDataSet(cc, idx, items, totalPages) {
   const key = `${cc}:${idx}`;
-  lruTouch(key, { until: Date.now() + SALES_PAGE_TTL_MS, items, totalPages });
+  const val = { until: Date.now() + SALES_PAGE_TTL_MS, items, totalPages };
+  lruTouch(key, val);
+  return val;
 }
 
 /* Prewarm queue with spacing + dedupe */
@@ -1612,43 +1622,52 @@ async function getPageData(cc, pageIndex) {
   const cached = cacheDataGet(cc, pageIndex);
   if (cached) return cached;
 
-  const start = pageIndex * SALES_PAGE_SIZE;
-  const t = time(`SALES:fetch:${cc}:${pageIndex}`);
-  const data = await fetchSearchJson(cc, start, SALES_PAGE_SIZE);
-  let items = parseSearchHtml(data.results_html || '');
+  const key = `${cc}:${pageIndex}`;
+  if (pageInflight.has(key)) return pageInflight.get(key);
 
-  // Compute total pages (robust)
-  const rawTotal = Number(data.total_count);
-  let totalPages;
-  if (Number.isFinite(rawTotal) && rawTotal > 0) {
-    totalPages = Math.max(1, Math.ceil(rawTotal / SALES_PAGE_SIZE));
-  } else {
-    totalPages = items.length === SALES_PAGE_SIZE ? (pageIndex + 2) : (pageIndex + 1);
-  }
+  const fetchPromise = (async () => {
+    const start = pageIndex * SALES_PAGE_SIZE;
+    const t = time(`SALES:fetch:${cc}:${pageIndex}`);
+    const data = await fetchSearchJson(cc, start, SALES_PAGE_SIZE);
+    let items = parseSearchHtml(data.results_html || '');
 
-  // 🔁 Fallback: if Steam gave us the same IDs as the previous page, grab the full HTML page
-  const prev = cacheDataGet(cc, pageIndex - 1);
-  if (prev && sameIds(prev.items, items)) {
-    try {
-      const html = await fetchSearchPageHtml(cc, pageIndex);
-      const alt = parseSearchHtml(html);
-      if (alt.length) {
-        // Match our page size; Steam's full page may be 25 items
-        items = alt.slice(0, SALES_PAGE_SIZE);
-        // Update totalPages pessimistically if needed
-        if (alt.length < SALES_PAGE_SIZE && totalPages < pageIndex + 1) {
-          totalPages = pageIndex + 1;
-        }
-      }
-    } catch (e) {
-      SALES_TAG.debug(`fallback page fetch failed p=${pageIndex}: ${e?.message}`);
+    // Compute total pages (robust)
+    const rawTotal = Number(data.total_count);
+    let totalPages;
+    if (Number.isFinite(rawTotal) && rawTotal > 0) {
+      totalPages = Math.max(1, Math.ceil(rawTotal / SALES_PAGE_SIZE));
+    } else {
+      totalPages = items.length === SALES_PAGE_SIZE ? (pageIndex + 2) : (pageIndex + 1);
     }
-  }
-    
-  t.end();
-  cacheDataSet(cc, pageIndex, items, totalPages);
-  SALES_TAG.trace(`p${pageIndex} ids=`, items.map(i=>i.id).join(','));
-  return { items, totalPages, until: Date.now() + SALES_PAGE_TTL_MS };
+
+    // 🔁 Fallback: if Steam gave us the same IDs as the previous page, grab the full HTML page
+    const prev = cacheDataGet(cc, pageIndex - 1);
+    if (prev && sameIds(prev.items, items)) {
+      try {
+        const html = await fetchSearchPageHtml(cc, pageIndex);
+        const alt = parseSearchHtml(html);
+        if (alt.length) {
+          // Match our page size; Steam's full page may be 25 items
+          items = alt.slice(0, SALES_PAGE_SIZE);
+          // Update totalPages pessimistically if needed
+          if (alt.length < SALES_PAGE_SIZE && totalPages < pageIndex + 1) {
+            totalPages = pageIndex + 1;
+          }
+        }
+      } catch (e) {
+        SALES_TAG.debug(`fallback page fetch failed p=${pageIndex}: ${e?.message}`);
+      }
+    }
+
+    t.end();
+    const fresh = cacheDataSet(cc, pageIndex, items, totalPages);
+    SALES_TAG.trace(`p${pageIndex} ids=`, items.map(i=>i.id).join(','));
+    return fresh;
+  })();
+
+  pageInflight.set(key, fetchPromise);
+  fetchPromise.finally(() => { pageInflight.delete(key); });
+  return fetchPromise;
 }
 
 
@@ -1689,14 +1708,23 @@ function buildSalesComponents(cc, pageIndex, totalPages, epoch) {
 
 /* Prewarm helper around current */
 function prewarmAround(cc, pageIndex, totalPages) {
-  const n = SALES_PRECACHE_PAGES;
-  if (!n) return;
-  for (let i = 1; i <= n; i++) {
+  const upcoming = [];
+  for (let i = 1; i <= SALES_PRECACHE_PAGES; i++) {
     const idx = pageIndex + i;
     if (idx >= totalPages) break;
-    const delay = jitter(SALES_PREWARM_SPACING_MS * i);
-    scheduleWarm(cc, idx, delay);
+    upcoming.push({ idx, distance: i });
   }
+  for (let i = 1; i <= SALES_PRECACHE_PREV_PAGES; i++) {
+    const idx = pageIndex - i;
+    if (idx < 0) break;
+    upcoming.push({ idx, distance: i });
+  }
+  upcoming
+    .sort((a, b) => a.distance - b.distance)
+    .forEach(({ idx }, order) => {
+      const delay = jitter(SALES_PREWARM_SPACING_MS * (order + 1));
+      scheduleWarm(cc, idx, delay);
+    });
 }
 
 /* Permanent sales message + periodic refresh */
