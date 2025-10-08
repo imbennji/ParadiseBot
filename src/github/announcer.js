@@ -84,6 +84,14 @@ function firstLine(text) {
   return String(text).split(/\r?\n/, 1)[0];
 }
 
+function formatCommitMessage(message) {
+  if (!message) return null;
+  const cleaned = String(message).replace(/\r\n/g, '\n').trim();
+  if (!cleaned) return null;
+  if (cleaned.length <= 1024) return cleaned;
+  return `${cleaned.slice(0, 1021)}…`;
+}
+
 function buildEmbed(detail) {
   const commit = detail.commit || {};
   const author = commit.author || {};
@@ -116,6 +124,11 @@ function buildEmbed(detail) {
   }
 
   if (detail.author?.avatar_url) embed.setThumbnail(detail.author.avatar_url);
+
+  const messageBody = formatCommitMessage(commit.message);
+  if (messageBody) {
+    embed.addFields({ name: 'Message', value: messageBody });
+  }
 
   embed.setFooter({ text: 'GitHub' });
   return embed;
