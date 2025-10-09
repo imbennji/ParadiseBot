@@ -46,6 +46,32 @@ let cryptoWeb;
 try { cryptoWeb = require('node:crypto').webcrypto; } catch { cryptoWeb = { getRandomValues: (a) => require('crypto').randomFillSync(a) }; }
 function randomHex(n) { return [...cryptoWeb.getRandomValues(new Uint8Array(n/2))].map(b=>b.toString(16).padStart(2,'0')).join(''); }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function calcRetryDelay(base, attempt, max = 10_000) {
+  const raw = Math.min(max, Math.round(base * (2 ** (attempt - 1))));
+  const spread = Math.max(50, Math.round(raw * 0.2));
+  return jitter(Math.max(100, raw), spread / raw);
+}
+
+async function withRetries(fn, attempts, baseDelay = 400, { onRetry } = {}) {
+  let lastErr;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn(attempt);
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= attempts) break;
+      try { if (onRetry) await onRetry(err, attempt); } catch {}
+      const delay = calcRetryDelay(baseDelay, attempt);
+      await sleep(delay);
+    }
+  }
+  throw lastErr;
+}
+
 async function bootstrapStoreSession(cc = SALES_REGION_CC) {
   const jar = storeAxios.defaults.jar;
   const sessionid = randomHex(32);
@@ -60,8 +86,13 @@ async function ensureStoreSession(cc) {
   if (!storeReady) { await bootstrapStoreSession(cc); storeReady = true; }
 }
 
+async function rebootstrapStore(cc) {
+  storeReady = false;
+  await bootstrapStoreSession(cc);
+  storeReady = true;
+}
+
 async function fetchSearchJson(cc, start, count) {
-  await ensureStoreSession(cc);
   const params = {
     query: '',
     specials: 1,
@@ -82,28 +113,34 @@ async function fetchSearchJson(cc, start, count) {
     'Referer': SEARCH_REFERER(cc),
   };
 
-  const doGet = async () => {
-    const { data } = await storeAxios.get('/search/results/', { params, headers });
-    if (!data || typeof data !== 'object' || data.success !== 1) {
-      throw new Error('Unexpected search response');
+  let retried403 = false;
+  return await withRetries(
+    async (attempt) => {
+      await ensureStoreSession(cc);
+      const { data } = await storeAxios.get('/search/results/', { params, headers });
+      if (!data || typeof data !== 'object' || data.success !== 1) {
+        throw new Error('Unexpected search response');
+      }
+      return data;
+    },
+    3,
+    500,
+    {
+      onRetry: async (err) => {
+        const status = err?.response?.status;
+        if (status === 403) {
+          if (!retried403) SALES_TAG.warn('403 on search; re-bootstrapping session and retrying…');
+          retried403 = true;
+          await rebootstrapStore(cc);
+        } else if (status === 429 || status >= 500 || err.code === 'ECONNABORTED') {
+          SALES_TAG.debug(`search retry after ${status || err.code}`);
+        }
+      }
     }
-    return data;
-  };
-
-  try {
-    return await doGet();
-  } catch (e) {
-    if (e.response?.status === 403) {
-      SALES_TAG.warn('403 on search; re-bootstrapping session and retrying…');
-      await bootstrapStoreSession(cc);
-      return await doGet();
-    }
-    throw e;
-  }
+  );
 }
 
 async function fetchSearchPageHtml(cc, pageIndex) {
-  await ensureStoreSession(cc);
   const params = {
     specials: 1,
     category1: 998,
@@ -114,8 +151,22 @@ async function fetchSearchPageHtml(cc, pageIndex) {
     no_cache: 1
   };
   const headers = { 'Referer': SEARCH_REFERER(cc) };
-  const { data: html } = await storeAxios.get('/search/', { params, headers, responseType: 'text' });
-  return String(html || '');
+  return await withRetries(
+    async () => {
+      await ensureStoreSession(cc);
+      const { data: html } = await storeAxios.get('/search/', { params, headers, responseType: 'text' });
+      return String(html || '');
+    },
+    2,
+    500,
+    {
+      onRetry: async (err) => {
+        if (err?.response?.status === 403) {
+          await rebootstrapStore(cc);
+        }
+      }
+    }
+  );
 }
 
 function priceToNumber(s) {
@@ -240,6 +291,25 @@ function scheduleWarm(cc, idx, delay) {
 function idsOf(items){ return items.map(it => it.id).join(','); }
 function sameIds(a,b){ return a && b && idsOf(a) === idsOf(b); }
 
+function expectedItemsForPage(rawTotal, start) {
+  if (!Number.isFinite(rawTotal) || rawTotal <= 0) return null;
+  const remaining = Math.max(0, rawTotal - start);
+  return Math.min(SALES_PAGE_SIZE, remaining);
+}
+
+function needsHtmlFallback({ items, rawTotal, start, pageIndex, prevItems, resultsHtml }) {
+  if (!resultsHtml || !resultsHtml.trim()) return 'missing_json_html';
+  if (!Array.isArray(items)) return 'invalid_items';
+  if (items.length === 0) {
+    const expected = expectedItemsForPage(rawTotal, start);
+    if ((expected && expected > 0) || (!Number.isFinite(rawTotal) && start === 0)) return 'empty_page';
+  }
+  if (prevItems && sameIds(prevItems, items)) return 'duplicate_prev';
+  const expected = expectedItemsForPage(rawTotal, start);
+  if (expected && expected > items.length && pageIndex >= 0) return 'short_page';
+  return null;
+}
+
 async function getPageData(cc, pageIndex) {
   const cached = cacheDataGet(cc, pageIndex);
   if (cached) return cached;
@@ -262,7 +332,16 @@ async function getPageData(cc, pageIndex) {
     }
 
     const prev = cacheDataGet(cc, pageIndex - 1);
-    if (prev && sameIds(prev.items, items)) {
+    const fallbackReason = needsHtmlFallback({
+      items,
+      rawTotal,
+      start,
+      pageIndex,
+      prevItems: prev?.items,
+      resultsHtml: data.results_html,
+    });
+    if (fallbackReason) {
+      SALES_TAG.debug(`json fallback triggered p=${pageIndex} reason=${fallbackReason}`);
       try {
         const html = await fetchSearchPageHtml(cc, pageIndex);
         const alt = parseSearchHtml(html);
