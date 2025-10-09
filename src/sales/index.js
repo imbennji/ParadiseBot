@@ -628,22 +628,16 @@ async function handleButtonInteraction(interaction) {
     return;
   }
 
-  const willQueue = (typeof state.limit?.activeCount === 'number') ? state.limit.activeCount > 0 : false;
   const acked = await safeDeferUpdate(interaction);
   if (!acked) return;
 
   state.pendingRequests.add(requestKey);
 
   try {
-    if (willQueue) {
-      await safeFollowUp(interaction, { content: 'Hold on, finishing the previous update…', ephemeral: true });
-    }
-
     await state.limit(async () => {
       state.inflightKey = { key: requestKey, startedAt: Date.now() };
       try {
         if (SALES_NAV_COOLDOWN_MS > 0 && state.cooldownUntil && state.cooldownUntil > Date.now()) {
-          await safeFollowUp(interaction, { content: 'That update just finished. Please try again in a moment.', ephemeral: true });
           return;
         }
 
