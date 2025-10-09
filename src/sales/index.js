@@ -306,10 +306,15 @@ function getNavState(messageId) {
       limit: pLimit(1),
       cooldownUntil: 0,
       userCooldowns: new Map(),
+      pendingRequests: new Set(),
       inflightKey: null,
       cleanupTimer: null,
     };
     navState.set(messageId, state);
+  }
+
+  if (!state.pendingRequests) {
+    state.pendingRequests = new Set();
   }
 
   if (state.cleanupTimer) {
@@ -596,10 +601,7 @@ async function handleButtonInteraction(interaction) {
   }
 
   if (epoch !== currentEpoch) {
-    const message = epoch < currentEpoch
-      ? 'Those buttons are a little out of date. Please use the refreshed buttons on the message.'
-      : 'Please wait a moment for the current page update to finish.';
-    await safeReply(interaction, { content: message, ephemeral: true });
+    await safeDeferUpdate(interaction);
     return;
   }
 
@@ -618,30 +620,21 @@ async function handleButtonInteraction(interaction) {
   }
 
   const requestKey = `${requestedPage}:${epoch}`;
-  if (state.inflightKey && state.inflightKey.key === requestKey) {
-    const acked = await safeDeferUpdate(interaction);
-    if (acked) {
-      await safeFollowUp(interaction, { content: 'Still updating that page. Hang tight!', ephemeral: true });
-    }
+  if (state.pendingRequests.has(requestKey)) {
+    await safeDeferUpdate(interaction);
     return;
   }
 
-  const willQueue = (typeof state.limit?.activeCount === 'number') ? state.limit.activeCount > 0 : false;
   const acked = await safeDeferUpdate(interaction);
   if (!acked) return;
 
-  if (willQueue) {
-    await safeFollowUp(interaction, { content: 'Hold on, finishing the previous update…', ephemeral: true });
-  } else {
-    await safeFollowUp(interaction, { content: 'Updating sales page…', ephemeral: true });
-  }
+  state.pendingRequests.add(requestKey);
 
   try {
     await state.limit(async () => {
       state.inflightKey = { key: requestKey, startedAt: Date.now() };
       try {
         if (SALES_NAV_COOLDOWN_MS > 0 && state.cooldownUntil && state.cooldownUntil > Date.now()) {
-          await safeFollowUp(interaction, { content: 'That update just finished. Please try again in a moment.', ephemeral: true });
           return;
         }
 
@@ -687,6 +680,8 @@ async function handleButtonInteraction(interaction) {
     await safeEditReply(interaction, { content: `Error: ${e.message || e}`, components: [] });
     state.cooldownUntil = 0;
     if (userId) state.userCooldowns.delete(userId);
+  } finally {
+    state.pendingRequests.delete(requestKey);
   }
 }
 
