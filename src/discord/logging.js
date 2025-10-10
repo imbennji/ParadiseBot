@@ -235,6 +235,16 @@ async function handleMessageDelete(message) {
 
   const author = message.author ?? null;
   const authorId = author?.id || message.authorId || null;
+  const cachedAuthor = authorId && !author ? client.users.cache.get(authorId) : null;
+  const isBotAuthor = Boolean(
+    author?.bot
+      || message.author?.bot
+      || message.member?.user?.bot
+      || cachedAuthor?.bot
+      || (authorId && client.user?.id && authorId === client.user.id)
+  );
+  if (isBotAuthor) return;
+
   const content = message.content?.trim();
   const attachments = message.attachments && message.attachments.size
     ? Array.from(message.attachments.values())
