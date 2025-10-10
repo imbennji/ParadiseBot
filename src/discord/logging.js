@@ -357,43 +357,86 @@ async function handleVoiceStateUpdate(oldState, newState) {
   if (!joined && !left && !moved && stateChanges.length === 0) return;
 
   await dispatchLog(guild, () => {
+    const accentColor = joined ? Colors.Green : left ? Colors.Red : moved ? Colors.Orange : Colors.Blurple;
     const embed = baseEmbed()
-      .setColor(Colors.Blue)
+      .setColor(accentColor)
       .setAuthor({
         name: user?.tag || 'Voice State Updated',
         iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
-      });
+      })
+      .setTitle('🔊 Voice Activity');
 
+    const avatarUrl = user?.displayAvatarURL?.({ size: 256 }) || null;
+    if (avatarUrl) embed.setThumbnail(avatarUrl);
+
+    const descriptionLines = [];
     if (joined) {
-      embed.setDescription(
-        `${userMention(user.id)} joined voice channel ${formatChannelReference(newState.channel, newChannelId)}.`
+      descriptionLines.push(
+        `🎧 ${userMention(user.id)} **joined** ${formatChannelReference(newState.channel, newChannelId)}.`
       );
     } else if (left) {
-      embed.setDescription(
-        `${userMention(user.id)} left voice channel ${formatChannelReference(oldState.channel, oldChannelId)}.`
+      descriptionLines.push(
+        `🚪 ${userMention(user.id)} **left** ${formatChannelReference(oldState.channel, oldChannelId)}.`
       );
     } else if (moved) {
-      embed.setDescription(
-        `${userMention(user.id)} moved from ${formatChannelReference(oldState.channel, oldChannelId)} to ${formatChannelReference(newState.channel, newChannelId)}.`
+      descriptionLines.push(
+        `🔁 ${userMention(user.id)} **moved channels**.`
       );
     } else {
       const channelRef = formatChannelReference(newState.channel ?? oldState.channel, newChannelId ?? oldChannelId);
-      embed.setDescription(`${userMention(user.id)} updated voice state in ${channelRef}.`);
+      descriptionLines.push(`🎛️ ${userMention(user.id)} updated voice state in ${channelRef}.`);
+    }
+
+    if (moved) {
+      descriptionLines.push(`› From ${formatChannelReference(oldState.channel, oldChannelId)}`);
+      descriptionLines.push(`› To ${formatChannelReference(newState.channel, newChannelId)}`);
+    }
+
+    if (descriptionLines.length) {
+      embed.setDescription(descriptionLines.join('\n'));
+    }
+
+    const sessionDetails = [];
+    if (newChannelId) {
+      sessionDetails.push(`• **Current:** ${formatChannelReference(newState.channel, newChannelId)}`);
+    }
+    if (oldChannelId) {
+      sessionDetails.push(`• **Previous:** ${formatChannelReference(oldState.channel, oldChannelId)}`);
+    }
+    if (sessionDetails.length) {
+      embed.addFields({
+        name: 'Voice Session',
+        value: trimFieldValue(sessionDetails.join('\n')),
+        inline: true,
+      });
     }
 
     if (stateChanges.length) {
       embed.addFields({
         name: 'State Changes',
         value: trimFieldValue(stateChanges.join('\n')),
+        inline: true,
       });
     }
 
+    const referenceDetails = [];
     if (newChannelId || oldChannelId) {
       const ref = newChannelId ? newChannelId : oldChannelId;
-      embed.addFields({ name: 'Channel ID', value: `${ref}` });
+      referenceDetails.push(`• **Channel ID:** ${ref}`);
+    }
+    const identifier = member?.id || newState.id || oldState.id;
+    if (identifier) {
+      referenceDetails.push(`• **User ID:** ${identifier}`);
+    }
+    if (referenceDetails.length) {
+      embed.addFields({
+        name: 'Reference',
+        value: trimFieldValue(referenceDetails.join('\n')),
+        inline: true,
+      });
     }
 
-    const footer = buildUserFooter(user, null, member?.id || newState.id || oldState.id);
+    const footer = buildUserFooter(user, null, identifier);
     if (footer) embed.setFooter(footer);
 
     return { embeds: [embed] };
