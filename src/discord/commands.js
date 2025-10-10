@@ -21,6 +21,7 @@ const {
   normalizeKind,
   hasBotPerms,
 } = require('./channels');
+const { handleMusicCommand } = require('../music/commands');
 const { ensureLeaderboardMessage } = require('../loops/leaderboard');
 const { ensureSalesMessage } = require('../sales/index');
 const {
@@ -51,6 +52,7 @@ const commandBuilders = [
           { name: 'xp_levelups',            value: CHANNEL_KINDS.XP },
           { name: 'logging',                value: CHANNEL_KINDS.LOGGING },
           { name: 'github_commits',         value: CHANNEL_KINDS.GITHUB },
+          { name: 'music',                  value: CHANNEL_KINDS.MUSIC },
         )
     )
     .addChannelOption(opt =>
@@ -93,6 +95,23 @@ const commandBuilders = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
     .setDMPermission(false)
     .addSubcommand(sc => sc.setName('init').setDescription('Create/move the Steam Game Sales embed to this channel')),
+  new SlashCommandBuilder()
+    .setName('music')
+    .setDescription('Music playback controls')
+    .setDMPermission(false)
+    .addSubcommand(sc => sc.setName('join').setDescription('Summon the bot to your voice channel'))
+    .addSubcommand(sc =>
+      sc.setName('play')
+        .setDescription('Queue a song by URL or search term')
+        .addStringOption(opt =>
+          opt.setName('query')
+            .setDescription('YouTube URL or search keywords')
+            .setRequired(true)
+        )
+    )
+    .addSubcommand(sc => sc.setName('skip').setDescription('Skip the current track'))
+    .addSubcommand(sc => sc.setName('queue').setDescription('Show the current queue'))
+    .addSubcommand(sc => sc.setName('leave').setDescription('Clear the queue and leave the voice channel')),
   new SlashCommandBuilder()
     .setName('permit')
     .setDescription('Temporarily allow a member to post links')
@@ -767,6 +786,7 @@ async function handleChatCommand(interaction) {
     case 'pingsteam':    await handlePingSteam(interaction);   break;
     case 'leaderboard':  await handleLeaderboard(interaction); break;
     case 'sales':        await handleSalesCmd(interaction);    break;
+    case 'music':        await handleMusicCommand(interaction); break;
     case 'rank':         await handleRank(interaction);        break;
     case 'kick':         await handleKick(interaction);        break;
     case 'ban':          await handleBan(interaction);         break;
