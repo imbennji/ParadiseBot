@@ -4,6 +4,7 @@ const {
   Routes,
   PermissionsBitField,
   ChannelType,
+  Collection,
 } = require('discord.js');
 const axios = require('axios').default;
 const { log, time } = require('../logger');
@@ -200,12 +201,12 @@ const commandBuilders = [
     ),
   new SlashCommandBuilder()
     .setName('clearchat')
-    .setDescription('Push blank lines into the chat to clear the view')
+    .setDescription('Delete recent messages to quickly clear the chat view')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages)
     .setDMPermission(false)
     .addIntegerOption(opt =>
       opt.setName('lines')
-        .setDescription('How many blank lines to post (max 200)')
+        .setDescription('How many recent messages to delete (max 200)')
         .setMinValue(1)
         .setMaxValue(200)
         .setRequired(true)
@@ -230,6 +231,7 @@ const commandBuilders = [
 
 const commands = commandBuilders.map(c => c.toJSON());
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+const BULK_DELETE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
 async function registerCommandsOnStartup() {
   const t = time('CMD:register');
@@ -583,7 +585,12 @@ async function handleClearChat(interaction) {
   try {
     while (remaining > 0) {
       const fetchSize = Math.min(remaining, 100);
-      const fetched = await channel.messages.fetch({ limit: fetchSize, before: cursor }).catch(err => {
+      const fetchOptions = { limit: fetchSize };
+      if (cursor) {
+        fetchOptions.before = cursor;
+      }
+
+      const fetched = await channel.messages.fetch(fetchOptions).catch(err => {
         log.tag('CMD:clearchat').warn(`guild=${interaction.guildId} channel=${channel.id} fetch failed:`, err?.stack || err);
         throw err;
       });
@@ -592,14 +599,58 @@ async function handleClearChat(interaction) {
         break;
       }
 
-      // Delete from newest to oldest to avoid hitting rate limits when paginating.
+      const bulkCandidates = new Collection();
+      const manualCandidates = [];
+      let scheduled = 0;
+      let progress = 0;
+      const now = Date.now();
+
       for (const message of fetched.values()) {
-        if (remaining <= 0) {
+        if (scheduled >= remaining) {
           break;
         }
 
         if (!message.deletable) {
           continue;
+        }
+
+        scheduled += 1;
+
+        if (now - message.createdTimestamp >= BULK_DELETE_WINDOW_MS) {
+          manualCandidates.push(message);
+        } else {
+          bulkCandidates.set(message.id, message);
+        }
+      }
+
+      if (bulkCandidates.size > 0) {
+        const bulkResult = await channel.bulkDelete(bulkCandidates, true).catch(err => {
+          log.tag('CMD:clearchat').warn(`guild=${interaction.guildId} channel=${channel.id} bulk delete failed:`, err?.stack || err);
+          return null;
+        });
+
+        if (bulkResult) {
+          if (bulkResult.size > 0) {
+            progress += bulkResult.size;
+            deletedCount += bulkResult.size;
+            remaining -= bulkResult.size;
+          }
+
+          if (bulkResult.size < bulkCandidates.size) {
+            for (const [id, message] of bulkCandidates.entries()) {
+              if (!bulkResult.has(id)) {
+                manualCandidates.push(message);
+              }
+            }
+          }
+        } else {
+          manualCandidates.push(...bulkCandidates.values());
+        }
+      }
+
+      for (const message of manualCandidates) {
+        if (remaining <= 0) {
+          break;
         }
 
         const success = await message.delete().then(() => true).catch(err => {
@@ -610,12 +661,13 @@ async function handleClearChat(interaction) {
         if (success) {
           remaining -= 1;
           deletedCount += 1;
+          progress += 1;
         }
       }
 
       cursor = fetched.lastKey();
 
-      if (!cursor) {
+      if (!cursor || progress === 0) {
         break;
       }
     }
@@ -629,8 +681,8 @@ async function handleClearChat(interaction) {
 
   log.tag('CMD:clearchat').info(`guild=${interaction.guildId} moderator=${interaction.user.id} channel=${channel.id} requested=${lines} deleted=${deletedCount}`);
 
-  const suffix = limited ? ' (Limited to 200 lines.)' : '';
-  const short = deletedCount < lines ? ' Some messages could not be removed.' : '';
+  const suffix = limited ? ` Requested ${requestedLines}, but I can only delete up to 200 at once.` : '';
+  const short = deletedCount < lines ? ' Some messages may be too old or not deletable.' : '';
   await interaction.editReply(`🧼 Deleted ${deletedCount} message(s).${suffix}${short}`);
 }
 
