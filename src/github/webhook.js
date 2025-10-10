@@ -1,3 +1,7 @@
+/**
+ * Minimal HTTP server that accepts GitHub webhook events and forwards push notifications to the
+ * announcer module. Keeping the server lightweight avoids pulling in a full web framework.
+ */
 const http = require('http');
 const { URL } = require('url');
 const crypto = require('crypto');
@@ -14,6 +18,10 @@ const { handlePushWebhook } = require('./announcer');
 const tag = log.tag('GITHUB-WEBHOOK');
 let server = null;
 
+/**
+ * Validates the `X-Hub-Signature-256` header using HMAC SHA-256. When no secret is configured we
+ * accept every request to simplify local development.
+ */
 function verifySignature(secret, signature, payloadBuffer) {
   if (!secret) return true;
   if (!signature) return false;
@@ -26,6 +34,10 @@ function verifySignature(secret, signature, payloadBuffer) {
   return crypto.timingSafeEqual(expected, provided);
 }
 
+/**
+ * Reads the raw request body while enforcing a size limit. GitHub payloads are typically small but
+ * the guard prevents malicious clients from exhausting memory.
+ */
 function readRequestBody(req, maxBytes = 1 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -51,6 +63,10 @@ function readRequestBody(req, maxBytes = 1 * 1024 * 1024) {
   });
 }
 
+/**
+ * Handles a single webhook invocation: validates path/method, verifies the signature, parses JSON,
+ * and dispatches push events to the announcer.
+ */
 async function handleRequest(req, res) {
   const url = new URL(req.url || '/', 'http://localhost');
   if (url.pathname !== GITHUB_WEBHOOK_PATH) {
@@ -120,6 +136,10 @@ async function handleRequest(req, res) {
   }
 }
 
+/**
+ * Starts the webhook server if enabled. Subsequent calls return the existing instance so the caller
+ * can invoke the function multiple times without creating duplicate listeners.
+ */
 function startGithubWebhookServer() {
   if (!GITHUB_WEBHOOK_ENABLED) {
     return null;

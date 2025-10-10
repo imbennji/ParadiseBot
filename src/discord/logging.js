@@ -1,3 +1,8 @@
+/**
+ * Rich logging subsystem responsible for mirroring notable Discord events (member joins, message
+ * deletions, moderation actions, etc.) into a dedicated channel. The goal is to provide moderators
+ * with a searchable audit trail without needing to sift through raw audit logs.
+ */
 const {
   Colors,
   EmbedBuilder,
@@ -16,6 +21,13 @@ const { log } = require('../logger');
 const logger = log.tag('LOG');
 let registered = false;
 
+/**
+ * Ensures embed field values stay within Discord's 1024 character limit while retaining enough
+ * context to be useful.
+ *
+ * @param {unknown} value - Any value that will be rendered inside an embed field.
+ * @returns {string} Sanitised field content.
+ */
 function trimFieldValue(value) {
   if (!value) return '*No content*';
   const str = String(value);
@@ -23,16 +35,28 @@ function trimFieldValue(value) {
   return `${str.slice(0, 1021)}...`;
 }
 
+/**
+ * Helper used throughout the module to convert booleans into a human friendly "Enabled/Disabled"
+ * label. Reusing a single helper keeps the terminology consistent across embeds.
+ */
 function boolLabel(value) {
   return value ? 'Enabled' : 'Disabled';
 }
 
+/**
+ * Resolves a channel mention string. When a cached channel instance is not available we fall back to
+ * a mention using the raw ID so the logs still communicate which channel was affected.
+ */
 function formatChannelReference(channel, channelId) {
   if (channel?.toString) return channel.toString();
   if (channelId) return channelMention(channelId);
   return '*Unknown channel*';
 }
 
+/**
+ * Maps Discord's numeric channel types to descriptive labels. Logging raw integers is unhelpful for
+ * moderators reading the embed after the fact.
+ */
 function formatChannelType(type) {
   switch (type) {
     case ChannelType.GuildText:
@@ -62,6 +86,16 @@ function formatChannelType(type) {
   }
 }
 
+/**
+ * Sends a message to the configured logging channel, gracefully handling missing configuration or
+ * insufficient permissions. The `payloadBuilder` allows each handler to construct embeds lazily so
+ * expensive formatting is skipped when logging is disabled.
+ *
+ * @param {import('discord.js').Guild} guild - Guild to dispatch to.
+ * @param {(channel: import('discord.js').GuildTextBasedChannel) => import('discord.js').MessageCreateOptions|false} payloadBuilder
+ *   - Function returning the payload to send.
+ * @returns {Promise<boolean>} Whether a message was sent.
+ */
 async function dispatchLog(guild, payloadBuilder) {
   try {
     const channel = await getAnnouncementChannel(guild, CHANNEL_KINDS.LOGGING);
@@ -87,15 +121,27 @@ async function dispatchLog(guild, payloadBuilder) {
 
 const LOG_BRAND = 'Paradise Logging';
 
+/**
+ * Returns a timestamped embed pre-configured with the logging brand. Centralising this logic keeps
+ * all log messages visually consistent.
+ */
 function baseEmbed() {
   return new EmbedBuilder().setTimestamp(new Date());
 }
 
+/**
+ * Constructs an embed footer that always includes the logging brand but may append contextual
+ * details such as message IDs or user IDs.
+ */
 function buildFooter(...parts) {
   const footerParts = [LOG_BRAND, ...parts.filter(Boolean)];
   return { text: footerParts.join(' • ') };
 }
 
+/**
+ * Convenience factory used by every log handler to standardise accent colours, emojis, and author
+ * headers. The optional thumbnail ensures avatars appear consistently sized across embeds.
+ */
 function createLogEmbed({ accentColor, emoji, label, iconURL, thumbnailURL } = {}) {
   const embed = baseEmbed();
   if (accentColor) {
@@ -114,6 +160,10 @@ function createLogEmbed({ accentColor, emoji, label, iconURL, thumbnailURL } = {
   return embed;
 }
 
+/**
+ * Formats a user mention with an additional line showing the tag or fallback ID. Including both
+ * pieces of data makes the logs readable even if the user changes their username later.
+ */
 function formatUserReference(user, fallbackId) {
   if (user?.id) {
     const mention = userMention(user.id);
@@ -123,6 +173,10 @@ function formatUserReference(user, fallbackId) {
   return fallbackId ? `ID: ${fallbackId}` : '*Unknown user*';
 }
 
+/**
+ * Footer helper tailored to user-centric logs. Many embeds append the acting user's ID so moderators
+ * can cross-reference audit log entries.
+ */
 function buildUserFooter(user, extra, fallbackId) {
   const idPart = user?.id
     ? `User ID: ${user.id}`
@@ -132,6 +186,10 @@ function buildUserFooter(user, extra, fallbackId) {
   return buildFooter(idPart, extra);
 }
 
+/**
+ * Logs when a new human member joins the guild. Bots are excluded because they often flood the
+ * logging channel during deployments.
+ */
 async function handleMemberAdd(member) {
   const user = member.user ?? null;
   if (user?.bot) return;
@@ -179,6 +237,10 @@ async function handleMemberAdd(member) {
   });
 }
 
+/**
+ * Logs voluntary leaves and moderation removals. We intentionally do not attempt to guess the cause;
+ * moderators can cross-reference audit logs if they need additional context.
+ */
 async function handleMemberRemove(member) {
   const user = member.user ?? null;
   if (user?.bot) return;
@@ -223,6 +285,10 @@ async function handleMemberRemove(member) {
   });
 }
 
+/**
+ * Captures the best-effort snapshot of a deleted message including attachments. Partial messages are
+ * fetched when possible so ephemeral caches do not prevent auditing.
+ */
 async function handleMessageDelete(message) {
   if (!message.guild) return;
   if (message.partial) {
@@ -297,6 +363,10 @@ async function handleMessageDelete(message) {
   });
 }
 
+/**
+ * Logs message edits when the content or attachment set changes. Linking back to the message allows
+ * moderators to jump directly into context when reviewing the log entry.
+ */
 async function handleMessageUpdate(oldMessage, newMessage) {
   if (!newMessage.guild) return;
   if (newMessage.partial) {
@@ -368,6 +438,11 @@ async function handleMessageUpdate(oldMessage, newMessage) {
   });
 }
 
+/**
+ * Summarises changes to a member's voice state including joins, disconnects, moves, and mute/deafen
+ * toggles. The embed focuses on describing the session in human terms rather than exposing raw
+ * gateway events.
+ */
 async function handleVoiceStateUpdate(oldState, newState) {
   const guild = newState.guild ?? oldState.guild;
   if (!guild) return;
@@ -505,6 +580,10 @@ async function handleVoiceStateUpdate(oldState, newState) {
   });
 }
 
+/**
+ * Tracks role assignments, display name changes, and timeout adjustments. This acts as an early
+ * warning system for compromised accounts or accidental moderator actions.
+ */
 async function handleGuildMemberUpdate(oldMember, newMember) {
   if (!newMember.guild) return;
 
@@ -591,6 +670,10 @@ async function handleGuildMemberUpdate(oldMember, newMember) {
   });
 }
 
+/**
+ * Emits a summary when a new channel is created, including key properties such as NSFW status or
+ * slowmode timers so staff can immediately review the configuration.
+ */
 async function handleChannelCreate(channel) {
   const guild = channel.guild;
   if (!guild) return;
@@ -636,6 +719,10 @@ async function handleChannelCreate(channel) {
   });
 }
 
+/**
+ * Records when a channel is deleted. We keep the payload intentionally small because Discord removes
+ * most metadata once the channel disappears.
+ */
 async function handleChannelDelete(channel) {
   const guild = channel.guild;
   if (!guild) return;
@@ -660,6 +747,10 @@ async function handleChannelDelete(channel) {
   });
 }
 
+/**
+ * Diffs high-value channel properties (name, parent, slowmode, etc.) and logs the changes in a single
+ * embed. Skipping unchanged channels avoids spamming the log during routine operations.
+ */
 async function handleChannelUpdate(oldChannel, newChannel) {
   const guild = newChannel.guild ?? oldChannel.guild;
   if (!guild) return;
@@ -733,6 +824,10 @@ async function handleChannelUpdate(oldChannel, newChannel) {
   });
 }
 
+/**
+ * Logs the creation of new roles, including whether they are mentionable or hoisted. Knowing when new
+ * privilege-bearing roles appear is important for security audits.
+ */
 async function handleRoleCreate(role) {
   const guild = role.guild;
   if (!guild) return;
@@ -756,6 +851,10 @@ async function handleRoleCreate(role) {
   });
 }
 
+/**
+ * Mirrors role deletions into the log. Even though the role no longer exists we still include the ID
+ * so moderators can cross-check other systems.
+ */
 async function handleRoleDelete(role) {
   const guild = role.guild;
   if (!guild) return;
@@ -778,6 +877,10 @@ async function handleRoleDelete(role) {
   });
 }
 
+/**
+ * Reports modifications to existing roles, highlighting permission changes and other impactful
+ * fields. Permission diffs are wrapped in backticks to improve readability.
+ */
 async function handleRoleUpdate(oldRole, newRole) {
   const guild = newRole.guild ?? oldRole.guild;
   if (!guild) return;
@@ -834,6 +937,10 @@ async function handleRoleUpdate(oldRole, newRole) {
   });
 }
 
+/**
+ * Announces when a user is banned. The embed includes the reason when provided so staff can review
+ * moderation consistency later.
+ */
 async function handleGuildBanAdd(ban) {
   const { guild, user, reason } = ban;
   if (!guild) return;
@@ -864,6 +971,10 @@ async function handleGuildBanAdd(ban) {
   });
 }
 
+/**
+ * Announces when a user is unbanned. Including the previous reason gives context about why the ban
+ * may have been reversed.
+ */
 async function handleGuildBanRemove(ban) {
   const { guild, user, reason } = ban;
   if (!guild) return;
@@ -894,6 +1005,10 @@ async function handleGuildBanRemove(ban) {
   });
 }
 
+/**
+ * Installs event listeners on the shared Discord client. The guard against double-registration makes
+ * the function safe to call multiple times (useful in tests or hot reload scenarios).
+ */
 function registerLogging() {
   if (registered) return;
   registered = true;

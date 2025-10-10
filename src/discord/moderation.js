@@ -1,3 +1,8 @@
+/**
+ * Minimal content moderation helper that removes hateful slurs before they linger in chat. The list
+ * can be extended via the `MODERATION_BANNED_TERMS` environment variable to support community
+ * specific sensitivities without redeploying the bot.
+ */
 const { log } = require('../logger');
 
 const DEFAULT_BANNED_TERMS = [
@@ -49,6 +54,10 @@ const EXTRA_BANNED_TERMS = (process.env.MODERATION_BANNED_TERMS || '')
   .map(s => s.trim())
   .filter(Boolean);
 
+/**
+ * Normalises configured terms by stripping diacritics and punctuation so we can perform
+ * case-insensitive comparisons against user content.
+ */
 function normalizeTerm(term) {
   return term
     .normalize('NFKD')
@@ -70,6 +79,10 @@ const BANNED_TERMS = [...new Set([...DEFAULT_BANNED_TERMS, ...EXTRA_BANNED_TERMS
   })
   .filter(entry => entry.normalized.length > 0);
 
+/**
+ * Extracts all text-like content from a Discord message including embeds and attachment filenames.
+ * Moderation decisions are based on the combined text to avoid users bypassing filters via embeds.
+ */
 function collectMessageText(message) {
   const parts = [];
   if (message.content) parts.push(message.content);
@@ -94,6 +107,10 @@ function collectMessageText(message) {
   return parts;
 }
 
+/**
+ * Normalises user-provided text into a searchable form. The logic mirrors `normalizeTerm` so that our
+ * comparisons behave identically for both configuration and runtime content.
+ */
 function normalizeContent(content) {
   return content
     .normalize('NFKD')
@@ -104,6 +121,10 @@ function normalizeContent(content) {
     .trim();
 }
 
+/**
+ * Scans text for any configured banned term. Phrase matches look for whole words to reduce false
+ * positives (e.g. "assistant" should not trigger a ban on "ass").
+ */
 function findBannedTerm(text) {
   const normalized = normalizeContent(text);
   if (!normalized) return null;
@@ -122,6 +143,11 @@ function findBannedTerm(text) {
   return null;
 }
 
+/**
+ * Entry point used by the message handler. When a banned term is detected the offending message is
+ * deleted, the author receives a DM explaining the reason, and a log entry is emitted. Returning a
+ * boolean allows callers to skip additional processing for removed content.
+ */
 async function enforceContentModeration(message) {
   const textParts = collectMessageText(message);
   if (!textParts.length) return false;

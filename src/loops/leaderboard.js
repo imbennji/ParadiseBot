@@ -1,3 +1,8 @@
+/**
+ * Maintains a persistent leaderboard message per guild that highlights top playtime, achievements,
+ * and new game additions. Stats are aggregated from the shared `user_game_stats` table which is fed
+ * by other loops (achievements, owned games, etc.).
+ */
 const { EmbedBuilder } = require('discord.js');
 const { dbRun, dbGet, dbAll } = require('../db');
 const { log, time } = require('../logger');
@@ -6,6 +11,10 @@ const { STEAM_COLOR, LEADERBOARD_POLL_MS } = require('../config');
 const { CHANNEL_KINDS, getAnnouncementChannel, getConfiguredGuildIds } = require('../discord/channels');
 const { hours } = require('../utils/text');
 
+/**
+ * Persists playtime statistics for a given user/app combination. Values are clamped to zero to avoid
+ * negative data from upstream APIs.
+ */
 async function upsertPlaytimeStats(gid, uid, appid, totalMin, twoWMin) {
   const now = Math.floor(Date.now()/1000);
   await dbRun(
@@ -16,6 +25,9 @@ async function upsertPlaytimeStats(gid, uid, appid, totalMin, twoWMin) {
   );
 }
 
+/**
+ * Persists achievement totals for a given user/app pair.
+ */
 async function upsertAchievementStats(gid, uid, appid, unlocked, total) {
   const now = Math.floor(Date.now()/1000);
   await dbRun(
@@ -26,6 +38,10 @@ async function upsertAchievementStats(gid, uid, appid, unlocked, total) {
   );
 }
 
+/**
+ * Makes sure the guild has a canonical leaderboard message. When the target channel changes the old
+ * message is deleted and a fresh placeholder is created in the new location.
+ */
 async function ensureLeaderboardMessage(guild, targetChannel = null) {
   const row = await dbGet('SELECT channel_id, message_id FROM leaderboard_msgs WHERE guild_id=?', [guild.id]);
   const configured = await getAnnouncementChannel(guild, CHANNEL_KINDS.LEADERBOARD);
@@ -69,6 +85,9 @@ async function ensureLeaderboardMessage(guild, targetChannel = null) {
   return { channel: ch, messageId: row.message_id };
 }
 
+/**
+ * Rebuilds the leaderboard embeds for every configured guild by aggregating stats from the database.
+ */
 async function refreshLeaderboards() {
   const guildIds = await getConfiguredGuildIds();
   for (const gid of guildIds) {
@@ -117,6 +136,10 @@ async function refreshLeaderboards() {
   }
 }
 
+/**
+ * Schedules the recurring leaderboard refresh loop. Set `runNow` to true to avoid waiting for the
+ * first interval after startup.
+ */
 function scheduleLeaderboardLoop(runNow = false) {
   const run = async () => {
     try { await refreshLeaderboards(); }

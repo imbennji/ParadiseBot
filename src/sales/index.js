@@ -1,3 +1,9 @@
+/**
+ * Implements the "Steam Game Sales" feature which fetches discounted titles from the Steam Store,
+ * caches the results locally, and renders them into a paginated Discord embed with navigation
+ * buttons. The code leans heavily on caching and retry logic to survive Steam's occasionally flaky
+ * responses.
+ */
 const axios = require('axios').default;
 const cheerio = require('cheerio');
 const { wrapper: axiosCookieJarSupport } = require('axios-cookiejar-support');
@@ -46,16 +52,25 @@ let cryptoWeb;
 try { cryptoWeb = require('node:crypto').webcrypto; } catch { cryptoWeb = { getRandomValues: (a) => require('crypto').randomFillSync(a) }; }
 function randomHex(n) { return [...cryptoWeb.getRandomValues(new Uint8Array(n/2))].map(b=>b.toString(16).padStart(2,'0')).join(''); }
 
+/** Simple async sleep helper used by the retry/backoff logic. */
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Calculates an exponential backoff delay with jitter so multiple concurrent failures do not retry
+ * in lockstep.
+ */
 function calcRetryDelay(base, attempt, max = 10_000) {
   const raw = Math.min(max, Math.round(base * (2 ** (attempt - 1))));
   const spread = Math.max(50, Math.round(raw * 0.2));
   return jitter(Math.max(100, raw), spread / raw);
 }
 
+/**
+ * Wraps an async function with retry logic. Callers can hook into `onRetry` to perform additional
+ * logging or state resets (e.g. re-bootstrapping cookies after a 403).
+ */
 async function withRetries(fn, attempts, baseDelay = 400, { onRetry } = {}) {
   let lastErr;
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -72,6 +87,10 @@ async function withRetries(fn, attempts, baseDelay = 400, { onRetry } = {}) {
   throw lastErr;
 }
 
+/**
+ * Seeds the axios cookie jar with enough information to mimic a real browser session. Steam relies on
+ * these cookies for regional pricing so we cannot simply hit the JSON endpoints unauthenticated.
+ */
 async function bootstrapStoreSession(cc = SALES_REGION_CC) {
   const jar = storeAxios.defaults.jar;
   const sessionid = randomHex(32);
@@ -82,16 +101,22 @@ async function bootstrapStoreSession(cc = SALES_REGION_CC) {
   try { await storeAxios.get('/', { params: { cc, l: 'en' } }); } catch {}
 }
 let storeReady = false;
+/** Ensures that we have initialised the store session exactly once per process. */
 async function ensureStoreSession(cc) {
   if (!storeReady) { await bootstrapStoreSession(cc); storeReady = true; }
 }
 
+/** Forces the cookie jar to be rebuilt. Useful when Steam invalidates our session mid-run. */
 async function rebootstrapStore(cc) {
   storeReady = false;
   await bootstrapStoreSession(cc);
   storeReady = true;
 }
 
+/**
+ * Calls the Steam search JSON endpoint and returns the parsed payload. Includes resilience against
+ * rate limits and regional blocking.
+ */
 async function fetchSearchJson(cc, start, count) {
   const params = {
     query: '',
@@ -140,6 +165,10 @@ async function fetchSearchJson(cc, start, count) {
   );
 }
 
+/**
+ * Fetches the HTML search page as a fallback when the JSON API omits results or returns malformed
+ * data.
+ */
 async function fetchSearchPageHtml(cc, pageIndex) {
   const params = {
     specials: 1,
@@ -169,6 +198,10 @@ async function fetchSearchPageHtml(cc, pageIndex) {
   );
 }
 
+/**
+ * Converts a locale-formatted price string into a JavaScript number. Handles both dot and comma
+ * decimal separators.
+ */
 function priceToNumber(s) {
   if (!s) return null;
   const m = String(s).match(/[\d.,]+/g);
@@ -186,6 +219,10 @@ function priceToNumber(s) {
   return parseFloat(digits.replace(/[.,]/g, ''));
 }
 
+/**
+ * Parses Steam search result HTML into a list of discounted items. We filter out non-discounted
+ * entries to avoid noise when the search API returns bundle or DLC entries without clear pricing.
+ */
 function parseSearchHtml(html) {
   const $ = cheerio.load(html);
   const out = [];
@@ -249,6 +286,8 @@ function parseSearchHtml(html) {
 
 const pageCache = new Map();
 const pageInflight = new Map();
+
+/** Maintains an LRU cache of search pages so frequently accessed regions stay warm. */
 function lruTouch(key, val) {
   if (pageCache.has(key)) pageCache.delete(key);
   pageCache.set(key, val);
@@ -257,6 +296,7 @@ function lruTouch(key, val) {
     pageCache.delete(firstKey);
   }
 }
+/** Retrieves a cached page entry if it is still within its TTL. */
 function cacheDataGet(cc, idx) {
   const key = `${cc}:${idx}`;
   const hit = pageCache.get(key);
@@ -268,6 +308,7 @@ function cacheDataGet(cc, idx) {
   if (hit) pageCache.delete(key);
   return null;
 }
+/** Stores a page result in the cache along with its expiration metadata. */
 function cacheDataSet(cc, idx, items, totalPages) {
   const key = `${cc}:${idx}`;
   const val = { until: Date.now() + SALES_PAGE_TTL_MS, items, totalPages };
@@ -277,6 +318,8 @@ function cacheDataSet(cc, idx, items, totalPages) {
 
 const warmingSet = new Set();
 function jitter(ms, j=0.3){ return Math.max(0, Math.round(ms * (1 - j + Math.random()*2*j))); }
+
+/** Schedules a background fetch of a page so navigation feels snappy. */
 function scheduleWarm(cc, idx, delay) {
   const key = `${cc}:${idx}`;
   if (warmingSet.has(key) || cacheDataGet(cc, idx)) return;
@@ -297,6 +340,10 @@ function expectedItemsForPage(rawTotal, start) {
   return Math.min(SALES_PAGE_SIZE, remaining);
 }
 
+/**
+ * Determines whether the JSON response looks suspicious and should be re-fetched via the HTML
+ * fallback. Common causes include empty pages despite there being more results.
+ */
 function needsHtmlFallback({ items, rawTotal, start, pageIndex, prevItems, resultsHtml }) {
   if (!resultsHtml || !resultsHtml.trim()) return 'missing_json_html';
   if (!Array.isArray(items)) return 'invalid_items';
@@ -310,6 +357,10 @@ function needsHtmlFallback({ items, rawTotal, start, pageIndex, prevItems, resul
   return null;
 }
 
+/**
+ * Public entry point for retrieving sales data. The function consults the cache, fetches JSON/HTML as
+ * needed, and normalises the result into a predictable structure.
+ */
 async function getPageData(cc, pageIndex) {
   const cached = cacheDataGet(cc, pageIndex);
   if (cached) return cached;
@@ -367,6 +418,7 @@ async function getPageData(cc, pageIndex) {
   return fetchPromise;
 }
 
+/** Formats a sale item into a human readable Markdown line. */
 function saleItemToLine(it) {
   const off = it.discount_percent ?? 0;
   const fin = (it.final_price_str && it.final_price_str.trim()) || 'Free';
@@ -378,6 +430,7 @@ const navEpoch = new Map();
 const navState = new Map();
 const NAV_STATE_TTL_MS = 10 * 60 * 1000;
 
+/** Returns (or creates) the navigation state tracker for a given message. */
 function getNavState(messageId) {
   let state = navState.get(messageId);
   if (!state) {
@@ -410,6 +463,7 @@ function getNavState(messageId) {
   return state;
 }
 
+/** Clears expired cooldowns from the navigation state so users regain access automatically. */
 function refreshCooldowns(state, now = Date.now()) {
   if (state.cooldownUntil && state.cooldownUntil <= now) {
     state.cooldownUntil = 0;
@@ -421,12 +475,14 @@ function refreshCooldowns(state, now = Date.now()) {
   }
 }
 
+/** Detects Discord API error codes that signal a response cannot be sent (expired interaction). */
 function isUnknownInteractionError(err) {
   if (!err) return false;
   const code = err.code ?? err?.rawError?.code ?? err?.data?.code;
   return code === 10062;
 }
 
+/** Wrapper around `interaction.reply` that swallows "Unknown interaction" errors. */
 async function safeReply(interaction, payload) {
   try {
     await interaction.reply(payload);
@@ -440,6 +496,7 @@ async function safeReply(interaction, payload) {
   }
 }
 
+/** Wrapper around `interaction.deferUpdate` that tolerates expired interactions. */
 async function safeDeferUpdate(interaction) {
   try {
     await interaction.deferUpdate();
@@ -454,6 +511,7 @@ async function safeDeferUpdate(interaction) {
   }
 }
 
+/** Wrapper around `interaction.editReply` that tolerates expired interactions. */
 async function safeEditReply(interaction, payload) {
   try {
     await interaction.editReply(payload);
@@ -467,6 +525,7 @@ async function safeEditReply(interaction, payload) {
   }
 }
 
+/** Wrapper around `interaction.followUp` that tolerates expired interactions. */
 async function safeFollowUp(interaction, payload) {
   try {
     await interaction.followUp(payload);
@@ -480,6 +539,7 @@ async function safeFollowUp(interaction, payload) {
   }
 }
 
+/** Renders the sales list as an embed with consistent branding. */
 function buildSalesEmbed(cc, pageIndex, items, totalPages) {
   const lines = items.length ? items.map(saleItemToLine).join('\n\n') : '_No discounted games found._';
   return new EmbedBuilder()
@@ -489,6 +549,7 @@ function buildSalesEmbed(cc, pageIndex, items, totalPages) {
     .setFooter({ text: `Showing ${items.length} items • ${SALES_PAGE_SIZE} per page • Region ${cc}` })
     .setTimestamp(new Date());
 }
+/** Builds the button row used for pagination. */
 function buildSalesComponents(cc, pageIndex, totalPages, epoch) {
   const prevBtn = new ButtonBuilder()
     .setCustomId(`sales_nav:${cc}:${pageIndex-1}:${epoch}`)
@@ -503,6 +564,7 @@ function buildSalesComponents(cc, pageIndex, totalPages, epoch) {
   return [ new ActionRowBuilder().addComponents(prevBtn, nextBtn) ];
 }
 
+/** Returns a disabled copy of the existing button rows to prevent duplicate clicks during updates. */
 function disableSalesComponentsFromMessage(message) {
   const rows = message?.components;
   if (!Array.isArray(rows) || rows.length === 0) return [];
@@ -535,6 +597,7 @@ function disableSalesComponentsFromMessage(message) {
   return disabledRows;
 }
 
+/** Warms pages around the current one so subsequent navigation hits the cache. */
 function prewarmAround(cc, pageIndex, totalPages) {
   const upcoming = [];
   for (let i = 1; i <= SALES_PRECACHE_PAGES; i++) {
@@ -555,6 +618,10 @@ function prewarmAround(cc, pageIndex, totalPages) {
     });
 }
 
+/**
+ * Ensures the persistent sales embed exists for the guild. On first run we create it; when moving
+ * channels we delete the old message before re-creating it.
+ */
 async function ensureSalesMessage(guild, targetChannel = null) {
   const row = await dbGet('SELECT channel_id, message_id FROM sales_msgs WHERE guild_id=?', [guild.id]);
   const configured = await getAnnouncementChannel(guild, CHANNEL_KINDS.SALES);
@@ -594,6 +661,9 @@ async function ensureSalesMessage(guild, targetChannel = null) {
   return { channel: ch, messageId: row.message_id };
 }
 
+/**
+ * Iterates through every configured guild and refreshes their sales embed with the latest data.
+ */
 async function refreshSalesForAllGuilds() {
   const guildIds = await getConfiguredGuildIds();
   for (const gid of guildIds) {
@@ -627,6 +697,10 @@ async function refreshSalesForAllGuilds() {
   }
 }
 
+/**
+ * Schedules the recurring sales refresh loop. Enabling `runNow` lets us populate embeds immediately
+ * on startup.
+ */
 function scheduleSalesLoop(runNow = false) {
   const run = async () => {
     try { await refreshSalesForAllGuilds(); }
@@ -637,6 +711,10 @@ function scheduleSalesLoop(runNow = false) {
   if (runNow) run();
 }
 
+/**
+ * Handles button clicks from the sales embed. The function enforces global/user cooldowns, updates
+ * the embed, and pre-warms neighbouring pages.
+ */
 async function handleButtonInteraction(interaction) {
   const id = interaction.customId || '';
   if (!id.startsWith('sales_nav:')) return;
@@ -768,6 +846,10 @@ async function handleButtonInteraction(interaction) {
 }
 
 let fullWarmTimer = null;
+/**
+ * Sequentially warms every sales page for the configured region. This is optionally triggered at
+ * startup so guilds with heavy usage can navigate without cache misses.
+ */
 function startFullSalesWarm(cc = SALES_REGION_CC) {
   if (fullWarmTimer) return;
   setTimeout(async () => {

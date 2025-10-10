@@ -1,3 +1,7 @@
+/**
+ * Lightweight representation of a music track. Instances wrap the metadata required for embeds as
+ * well as a factory function that yields audio streams compatible with Discord voice connections.
+ */
 const { createAudioResource, demuxProbe } = require('@discordjs/voice');
 
 class Track {

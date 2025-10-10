@@ -1,3 +1,8 @@
+/**
+ * Music playback engine built on top of `@discordjs/voice`. Each guild receives a single
+ * `MusicSubscription` instance that tracks the queue, handles reconnection, and emits lifecycle
+ * events for announcement hooks.
+ */
 const {
   AudioPlayerStatus,
   NoSubscriberBehavior,
@@ -12,6 +17,10 @@ const { log } = require('../logger');
 const subscriptions = new Map();
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * Represents the music state for a single guild. The class exposes high-level primitives (enqueue,
+ * skip, destroy) and emits events consumed by the command handlers.
+ */
 class MusicSubscription extends EventEmitter {
   constructor(guildId) {
     super();
@@ -49,6 +58,10 @@ class MusicSubscription extends EventEmitter {
     });
   }
 
+  /**
+   * Connects (or moves) the voice connection to the provided channel.
+   * @param {import('discord.js').VoiceBasedChannel} voiceChannel
+   */
   async connect(voiceChannel) {
     if (this._destroyed) throw new Error('This subscription has been destroyed.');
     if (!voiceChannel) throw new Error('No voice channel provided.');
@@ -80,6 +93,7 @@ class MusicSubscription extends EventEmitter {
     return this;
   }
 
+  /** @private */
   _registerConnectionEvents(connection) {
     connection.on(VoiceConnectionStatus.Disconnected, async () => {
       try {
@@ -98,6 +112,10 @@ class MusicSubscription extends EventEmitter {
     });
   }
 
+  /**
+   * Adds a track to the queue and starts playback if idle.
+   * @param {import('./track')} track
+   */
   async enqueue(track) {
     if (this._destroyed) throw new Error('Music player is no longer available.');
     this.queue.push(track);
@@ -108,6 +126,9 @@ class MusicSubscription extends EventEmitter {
     return track;
   }
 
+  /**
+   * Internal helper that advances to the next track or starts the idle timer when the queue is empty.
+   */
   async playNext() {
     if (this._destroyed) return;
     if (!this.connection) return;
@@ -135,6 +156,7 @@ class MusicSubscription extends EventEmitter {
     }
   }
 
+  /** Stops the current track and advances the queue. */
   skip() {
     if (this.player.state.status === AudioPlayerStatus.Idle) {
       return false;
@@ -143,14 +165,17 @@ class MusicSubscription extends EventEmitter {
     return true;
   }
 
+  /** Pauses playback if a track is currently playing. */
   pause() {
     return this.player.pause();
   }
 
+  /** Resumes playback after a pause. */
   resume() {
     return this.player.unpause();
   }
 
+  /** Returns shallow copies of the current and upcoming queue state. */
   getQueue() {
     return {
       current: this.current,
@@ -158,18 +183,21 @@ class MusicSubscription extends EventEmitter {
     };
   }
 
+  /** Starts the idle timeout which will eventually destroy the subscription. */
   startIdleTimer() {
     if (this._idleTimer || this._destroyed) return;
     this._idleTimer = setTimeout(() => this.destroy('idle'), IDLE_TIMEOUT_MS);
     if (typeof this._idleTimer.unref === 'function') this._idleTimer.unref();
   }
 
+  /** Clears the idle timeout if one is active. */
   clearIdleTimer() {
     if (!this._idleTimer) return;
     clearTimeout(this._idleTimer);
     this._idleTimer = null;
   }
 
+  /** Tears down the voice connection and clears internal state. */
   destroy(reason = 'manual') {
     if (this._destroyed) return;
     this._destroyed = true;
@@ -192,6 +220,10 @@ class MusicSubscription extends EventEmitter {
   }
 }
 
+/**
+ * Retrieves or creates the subscription for the guild and ensures it is connected to the desired
+ * voice channel.
+ */
 async function ensureGuildSubscription(guild, voiceChannel) {
   let sub = subscriptions.get(guild.id);
   let created = false;
@@ -207,10 +239,12 @@ async function ensureGuildSubscription(guild, voiceChannel) {
   return { subscription: sub, isNew: created };
 }
 
+/** Returns the subscription for the guild if it exists. */
 function getSubscription(guildId) {
   return subscriptions.get(guildId) || null;
 }
 
+/** Stops and removes the subscription for the guild. */
 function destroySubscription(guildId) {
   const sub = subscriptions.get(guildId);
   if (!sub) return false;

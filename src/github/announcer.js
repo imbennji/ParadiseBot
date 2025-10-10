@@ -1,3 +1,8 @@
+/**
+ * Polls GitHub for new commits and mirrors them to configured Discord channels. The announcer also
+ * accepts webhooks so deployments can receive near real-time updates without waiting for the polling
+ * interval to elapse.
+ */
 const { EmbedBuilder, time: discordTime } = require('discord.js');
 const axios = require('axios').default;
 const { log, time } = require('../logger');
@@ -16,6 +21,10 @@ const {
   GITHUB_EMBED_COLOR,
 } = require('../config');
 
+/**
+ * Attempts to derive a canonical `owner/repo` slug from various inputs (raw strings, URLs, etc.).
+ * Returning `null` signals that the configuration is incomplete.
+ */
 function deriveRepoSlug(owner, repo) {
   const trim = (value) => (typeof value === 'string' ? value.trim() : '');
   const trimmedOwner = trim(owner);
@@ -63,6 +72,10 @@ const github = axios.create({
   timeout: 10_000,
 });
 
+/**
+ * Fetches the most recent commits via GitHub's REST API. Pagination is not necessary because we only
+ * care about a small sliding window of history.
+ */
 async function fetchLatestCommits(limit = 10) {
   const params = new URLSearchParams({ per_page: String(limit) });
   if (GITHUB_BRANCH) params.set('sha', GITHUB_BRANCH);
@@ -70,20 +83,33 @@ async function fetchLatestCommits(limit = 10) {
   return Array.isArray(data) ? data : [];
 }
 
+/**
+ * Retrieves the detailed commit payload which contains author information and the full message body.
+ */
 async function fetchCommitDetail(sha) {
   const { data } = await github.get(`/repos/${repoSlug}/commits/${sha}`);
   return data;
 }
 
+/**
+ * Shortens a commit SHA for display in embeds.
+ */
 function shortSha(sha) {
   return sha ? String(sha).slice(0, 7) : '';
 }
 
+/**
+ * Extracts the first line of a commit message to use as the embed title.
+ */
 function firstLine(text) {
   if (!text) return 'No commit message';
   return String(text).split(/\r?\n/, 1)[0];
 }
 
+/**
+ * Sanitises the commit message body for embed inclusion, trimming overly long descriptions to stay
+ * within Discord's 1024 character limit.
+ */
 function formatCommitMessage(message) {
   if (!message) return null;
   const cleaned = String(message).replace(/\r\n/g, '\n').trim();
@@ -92,6 +118,10 @@ function formatCommitMessage(message) {
   return `${cleaned.slice(0, 1021)}…`;
 }
 
+/**
+ * Produces the Discord embed for a commit announcement. The embed surfaces commit metadata (author,
+ * timestamp, short SHA) and a truncated message body.
+ */
 function buildEmbed(detail) {
   const commit = detail.commit || {};
   const author = commit.author || {};
@@ -134,12 +164,18 @@ function buildEmbed(detail) {
   return embed;
 }
 
+/**
+ * Reads the last announced commit SHA from the database.
+ */
 async function loadLastSha() {
   if (!repoSlug) return null;
   const row = await dbGet('SELECT last_sha FROM github_announcements WHERE repo=?', [repoSlug]);
   return row?.last_sha || null;
 }
 
+/**
+ * Persists the most recent announced commit so polling can resume from that point on restart.
+ */
 async function saveLastSha(sha) {
   if (!repoSlug || !sha) return;
   await dbRun(
@@ -148,6 +184,10 @@ async function saveLastSha(sha) {
   );
 }
 
+/**
+ * Resolves the list of Discord channels subscribed to GitHub announcements. Channels missing
+ * permissions are skipped to avoid repeated send failures.
+ */
 async function resolveGithubChannels() {
   const rows = await dbAll('SELECT guild_id, channel_id FROM guild_channels WHERE kind=?', [CHANNEL_KINDS.GITHUB]);
   if (!rows.length) return [];
@@ -177,6 +217,10 @@ async function resolveGithubChannels() {
   return channels;
 }
 
+/**
+ * Sends one embed per commit to all configured targets. Failures are logged but do not halt the loop
+ * so one misconfigured guild does not block others.
+ */
 async function announceCommits(commits, targets) {
   if (!targets.length) return;
 
@@ -197,6 +241,10 @@ async function announceCommits(commits, targets) {
   }
 }
 
+/**
+ * Entry point for GitHub webhook deliveries. We perform the same validation as the polling loop but
+ * operate on the commits provided in the payload.
+ */
 async function handlePushWebhook(payload) {
   if (!GITHUB_ANNOUNCER_ENABLED) {
     log.tag('GITHUB').debug('Ignoring GitHub webhook because announcer is disabled.');
@@ -255,6 +303,10 @@ async function handlePushWebhook(payload) {
   await announceCommits(commits, targets);
 }
 
+/**
+ * Polls GitHub for new commits and announces anything that has not previously been stored. The logic
+ * respects the `announce_on_start` flag to avoid spamming channels when enabling the feature.
+ */
 async function pollGithub() {
   const t = time('POLL:github');
   try {
@@ -288,6 +340,10 @@ async function pollGithub() {
   }
 }
 
+/**
+ * Schedules the recurring polling loop. The `runNow` parameter is used during startup so the bot can
+ * announce commits immediately if desired.
+ */
 function scheduleGithubLoop(runNow = false) {
   if (!GITHUB_ANNOUNCER_ENABLED) {
     log.tag('GITHUB').info('GitHub announcer disabled via config.');

@@ -1,6 +1,13 @@
+/**
+ * Resolves user supplied search queries or URLs into playable `Track` instances using play-dl. Only
+ * YouTube videos are supported today which keeps the implementation compact.
+ */
 const play = require('play-dl');
 const { Track } = require('./track');
 
+/**
+ * Extracts a duration (in seconds) from the various shapes play-dl may return.
+ */
 function parseDurationSeconds(result) {
   if (typeof result?.durationInSec === 'number') {
     return result.durationInSec;
@@ -19,6 +26,10 @@ function parseDurationSeconds(result) {
   return seconds;
 }
 
+/**
+ * Refreshes play-dl tokens when required. Some providers use expiring tokens, so we best-effort call
+ * this before performing lookups.
+ */
 async function ensurePlayDlReady() {
   if (typeof play.is_expired === 'function' && play.is_expired()) {
     try {
@@ -29,6 +40,9 @@ async function ensurePlayDlReady() {
   }
 }
 
+/**
+ * Given a search query or URL, resolves metadata and returns a `Track` instance ready for playback.
+ */
 async function resolveTrack(query, requester) {
   await ensurePlayDlReady();
 

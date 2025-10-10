@@ -1,3 +1,7 @@
+/**
+ * Tracks Steam achievements for linked users and broadcasts unlocks plus milestones to Discord. The
+ * loop focuses on recently played games to reduce API load while still delivering timely updates.
+ */
 const pLimitImport = require('p-limit');
 const { EmbedBuilder } = require('discord.js');
 const { log, time } = require('../logger');
@@ -28,6 +32,10 @@ const { makeProgressBar } = require('../utils/text');
 const pLimit = typeof pLimitImport === 'function' ? pLimitImport : pLimitImport.default;
 const limiter = pLimit(CONCURRENCY);
 
+/**
+ * Schedules the recurring achievements poller. The `runNow` flag is used during startup to kick off
+ * an immediate poll so new deployments do not wait for the initial interval.
+ */
 function scheduleAchievementsLoop(runNow = false) {
   const run = async () => {
     try { await monitorAchievements(); }
@@ -38,6 +46,10 @@ function scheduleAchievementsLoop(runNow = false) {
   if (runNow) run();
 }
 
+/**
+ * Iterates over every configured guild, resolves the announcement channel, and queues achievement
+ * checks for each linked Steam account.
+ */
 async function monitorAchievements() {
   const t = time('POLL:achievements');
   const guildIds = await getConfiguredGuildIds();
@@ -69,6 +81,10 @@ async function monitorAchievements() {
   t.end();
 }
 
+/**
+ * Fetches the player's achievements for a specific game, compares them to stored watermarks, and
+ * emits notifications for new unlocks. The function also seeds progress tables during the first run.
+ */
 async function achCheckOne(guild, channel, userId, steamId, appid) {
   const tag = log.tag(`ACH:${userId}:${appid}`);
   const tw = time(`ACH:${userId}:${appid}`);
@@ -168,6 +184,10 @@ async function achCheckOne(guild, channel, userId, steamId, appid) {
   tw.end();
 }
 
+/**
+ * Pulls display metadata for an achievement from the Steam schema. The schema is optional because
+ * some games restrict their stats; in those cases we fall back to raw API names.
+ */
 function findAchievementMeta(schema, apiName) {
   if (!schema) return null;
   const list = schema?.availableGameStats?.achievements || [];
@@ -176,6 +196,10 @@ function findAchievementMeta(schema, apiName) {
   return { displayName: hit.displayName, description: hit.description, icon: hit.icon, icongray: hit.icongray };
 }
 
+/**
+ * Announces percentage milestones (e.g. 25%, 50%). The milestone configuration lives in the
+ * environment so communities can adjust how frequently they receive updates.
+ */
 async function maybeAnnounceAchMilestone(guild, userId, appid, gameName, totalAch, unlockedCountNow, channel, bar) {
   if (!totalAch) return;
   const pct = Math.floor((unlockedCountNow / totalAch) * 100);
