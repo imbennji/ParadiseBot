@@ -12,6 +12,7 @@ const CHANNEL_KINDS = {
   XP: 'xp_levelups',
   LOGGING: 'logging',
   GITHUB: 'github_commits',
+  MUSIC: 'music',
 };
 
 function normalizeKind(s) {
@@ -26,6 +27,7 @@ function normalizeKind(s) {
   if (['xp','levels','level_ups','levelups','xp_levelups','xp_announcements'].includes(v)) return CHANNEL_KINDS.XP;
   if (['log','logs','logging','mod_logs','server_logs'].includes(v)) return CHANNEL_KINDS.LOGGING;
   if (['github','commits','github_commits','github_updates','gh'].includes(v)) return CHANNEL_KINDS.GITHUB;
+  if (['music','songs','dj','jukebox'].includes(v)) return CHANNEL_KINDS.MUSIC;
   return null;
 }
 
