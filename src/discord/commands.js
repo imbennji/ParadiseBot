@@ -248,20 +248,20 @@ const commandBuilders = [
     ),
 ];
 
-const commands = commandBuilders.map(c => c.toJSON());
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
 const BULK_DELETE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
 async function registerCommandsOnStartup() {
   const t = time('CMD:register');
+  const payload = commandBuilders.map(c => c.toJSON());
   try {
     if (DEV_GUILD_ID) {
-      log.tag('CMD').info(`Registering ${commands.length} commands → guild ${DEV_GUILD_ID}`);
-      await rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DEV_GUILD_ID), { body: commands });
+      log.tag('CMD').info(`Registering ${payload.length} commands → guild ${DEV_GUILD_ID}`);
+      await rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DEV_GUILD_ID), { body: payload });
       log.tag('CMD').info('Guild commands registered.');
     } else {
-      log.tag('CMD').info(`Registering ${commands.length} commands → GLOBAL`);
-      await rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: commands });
+      log.tag('CMD').info(`Registering ${payload.length} commands → GLOBAL`);
+      await rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: payload });
       log.tag('CMD').info('Global commands registered (may take a bit to propagate).');
     }
   } catch (err) {
