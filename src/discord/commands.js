@@ -610,16 +610,23 @@ async function handleClearChat(interaction) {
           break;
         }
 
+        const withinBulkWindow = now - message.createdTimestamp < BULK_DELETE_WINDOW_MS;
+
         if (!message.deletable) {
+          if (!withinBulkWindow) {
+            scheduled += 1;
+            manualCandidates.push(message);
+          }
+
           continue;
         }
 
         scheduled += 1;
 
-        if (now - message.createdTimestamp >= BULK_DELETE_WINDOW_MS) {
-          manualCandidates.push(message);
-        } else {
+        if (withinBulkWindow) {
           bulkCandidates.set(message.id, message);
+        } else {
+          manualCandidates.push(message);
         }
       }
 
