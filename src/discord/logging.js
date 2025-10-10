@@ -85,8 +85,42 @@ async function dispatchLog(guild, payloadBuilder) {
   }
 }
 
+const LOG_BRAND = 'Paradise Logging';
+
 function baseEmbed() {
   return new EmbedBuilder().setTimestamp(new Date());
+}
+
+function buildFooter(...parts) {
+  const footerParts = [LOG_BRAND, ...parts.filter(Boolean)];
+  return { text: footerParts.join(' • ') };
+}
+
+function createLogEmbed({ accentColor, emoji, label, iconURL, thumbnailURL } = {}) {
+  const embed = baseEmbed();
+  if (accentColor) {
+    embed.setColor(accentColor);
+  }
+  const authorName = [emoji, label].filter(Boolean).join(' ');
+  if (authorName || iconURL) {
+    embed.setAuthor({
+      name: authorName || undefined,
+      iconURL: iconURL || undefined,
+    });
+  }
+  if (thumbnailURL) {
+    embed.setThumbnail(thumbnailURL);
+  }
+  return embed;
+}
+
+function formatUserReference(user, fallbackId) {
+  if (user?.id) {
+    const mention = userMention(user.id);
+    const tag = user.tag || user.username || user.id;
+    return `${mention}\n${tag}`;
+  }
+  return fallbackId ? `ID: ${fallbackId}` : '*Unknown user*';
 }
 
 function buildUserFooter(user, extra, fallbackId) {
@@ -95,8 +129,7 @@ function buildUserFooter(user, extra, fallbackId) {
     : fallbackId
       ? `User ID: ${fallbackId}`
       : null;
-  const extras = [idPart, extra].filter(Boolean);
-  return extras.length ? { text: extras.join(' • ') } : null;
+  return buildFooter(idPart, extra);
 }
 
 async function handleMemberAdd(member) {
@@ -104,13 +137,20 @@ async function handleMemberAdd(member) {
   if (user?.bot) return;
   await dispatchLog(member.guild, () => {
     const joinedAt = member.joinedAt ? new Date(member.joinedAt) : new Date();
-    const embed = baseEmbed()
-      .setColor(Colors.Green)
-      .setAuthor({
-        name: user?.tag || `Member Joined (${member.id})`,
-        iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
+    const avatarUrl = user?.displayAvatarURL?.({ size: 256 }) || null;
+    const embed = createLogEmbed({
+      accentColor: Colors.Green,
+      emoji: '🟢',
+      label: 'Member Joined',
+      iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
+      thumbnailURL: avatarUrl || undefined,
+    })
+      .setDescription(`${user ? userMention(user.id) : `ID: ${member.id}`} joined the server.`)
+      .addFields({
+        name: 'Member',
+        value: formatUserReference(user, member.id),
+        inline: true,
       })
-      .setDescription(`${user ? userMention(user.id) : member.id} joined the server.`)
       .addFields({
         name: 'Joined Server',
         value: `${formatDiscordTime(joinedAt, 'F')} (${formatDiscordTime(joinedAt, 'R')})`,
@@ -133,8 +173,7 @@ async function handleMemberAdd(member) {
       });
     }
 
-    const footer = buildUserFooter(user, null, member.id);
-    if (footer) embed.setFooter(footer);
+    embed.setFooter(buildUserFooter(user, null, member.id));
 
     return { embeds: [embed] };
   });
@@ -144,13 +183,20 @@ async function handleMemberRemove(member) {
   const user = member.user ?? null;
   if (user?.bot) return;
   await dispatchLog(member.guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.Red)
-      .setAuthor({
-        name: user?.tag || `Member Left (${member.id})`,
-        iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
-      })
-      .setDescription(`${user ? userMention(user.id) : member.id} left the server.`);
+    const avatarUrl = user?.displayAvatarURL?.({ size: 256 }) || null;
+    const embed = createLogEmbed({
+      accentColor: Colors.Red,
+      emoji: '🔻',
+      label: 'Member Left',
+      iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
+      thumbnailURL: avatarUrl || undefined,
+    })
+      .setDescription(`${user ? userMention(user.id) : `ID: ${member.id}`} left the server.`)
+      .addFields({
+        name: 'Member',
+        value: formatUserReference(user, member.id),
+        inline: true,
+      });
 
     if (user?.createdAt) {
       embed.addFields({
@@ -171,8 +217,7 @@ async function handleMemberRemove(member) {
       }
     }
 
-    const footer = buildUserFooter(user, null, member.id);
-    if (footer) embed.setFooter(footer);
+    embed.setFooter(buildUserFooter(user, null, member.id));
 
     return { embeds: [embed] };
   });
@@ -201,16 +246,18 @@ async function handleMessageDelete(message) {
   }
 
   await dispatchLog(message.guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.DarkRed)
-      .setAuthor({
-        name: author?.tag || 'Message Deleted',
-        iconURL: author?.displayAvatarURL?.({ size: 128 }) || undefined,
-      })
+    const avatarUrl = author?.displayAvatarURL?.({ size: 256 }) || null;
+    const embed = createLogEmbed({
+      accentColor: Colors.DarkRed,
+      emoji: '🗑️',
+      label: 'Message Deleted',
+      iconURL: author?.displayAvatarURL?.({ size: 128 }) || undefined,
+      thumbnailURL: avatarUrl || undefined,
+    })
       .setDescription(`Message deleted in ${channelMention(message.channelId)}.`)
       .addFields({
         name: 'Author',
-        value: author ? `${userMention(author.id)} (${author.tag})` : `Unknown (${authorId || 'unknown'})`,
+        value: formatUserReference(author, authorId || message.authorId || 'unknown'),
         inline: true,
       });
 
@@ -227,15 +274,14 @@ async function handleMessageDelete(message) {
 
     if (attachments.length) {
       const value = attachments
-        .map(att => `[${att.name || 'attachment'}](${att.url})`)
+        .map(att => `• [${att.name || 'attachment'}](${att.url})`)
         .join('\n');
       embed.addFields({ name: 'Attachments', value: trimFieldValue(value) });
     } else {
       embed.addFields({ name: 'Attachments', value: '*None*' });
     }
 
-    const footer = buildUserFooter(author, message.id ? `Message ID: ${message.id}` : null, authorId);
-    if (footer) embed.setFooter(footer);
+    embed.setFooter(buildUserFooter(author, message.id ? `Message ID: ${message.id}` : null, authorId));
 
     return { embeds: [embed] };
   });
@@ -268,16 +314,20 @@ async function handleMessageUpdate(oldMessage, newMessage) {
   if (beforeContent === afterContent && beforeAttachments === afterAttachments) return;
 
   await dispatchLog(newMessage.guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.Orange)
-      .setAuthor({
-        name: author?.tag || 'Message Edited',
-        iconURL: author?.displayAvatarURL?.({ size: 128 }) || undefined,
-      })
-      .setDescription(`Message edited in ${channelMention(newMessage.channelId)}. [Jump to message](${newMessage.url})`)
+    const avatarUrl = author?.displayAvatarURL?.({ size: 256 }) || null;
+    const embed = createLogEmbed({
+      accentColor: Colors.Orange,
+      emoji: '✏️',
+      label: 'Message Edited',
+      iconURL: author?.displayAvatarURL?.({ size: 128 }) || undefined,
+      thumbnailURL: avatarUrl || undefined,
+    })
+      .setDescription(
+        `Message edited in ${channelMention(newMessage.channelId)}. [Jump to message](${newMessage.url})`
+      )
       .addFields({
         name: 'Author',
-        value: author ? `${userMention(author.id)} (${author.tag})` : `Unknown (${authorId || 'unknown'})`,
+        value: formatUserReference(author, authorId || newMessage.authorId || oldMessage.authorId || 'unknown'),
         inline: true,
       });
 
@@ -297,13 +347,12 @@ async function handleMessageUpdate(oldMessage, newMessage) {
 
     if (afterAttachments) {
       const value = Array.from(newMessage.attachments.values())
-        .map(att => `[${att.name || 'attachment'}](${att.url})`)
+        .map(att => `• [${att.name || 'attachment'}](${att.url})`)
         .join('\n');
       embed.addFields({ name: 'Attachments', value: trimFieldValue(value) });
     }
 
-    const footer = buildUserFooter(author, newMessage.id ? `Message ID: ${newMessage.id}` : null, authorId);
-    if (footer) embed.setFooter(footer);
+    embed.setFooter(buildUserFooter(author, newMessage.id ? `Message ID: ${newMessage.id}` : null, authorId));
 
     return { embeds: [embed] };
   });
@@ -358,16 +407,14 @@ async function handleVoiceStateUpdate(oldState, newState) {
 
   await dispatchLog(guild, () => {
     const accentColor = joined ? Colors.Green : left ? Colors.Red : moved ? Colors.Orange : Colors.Blurple;
-    const embed = baseEmbed()
-      .setColor(accentColor)
-      .setAuthor({
-        name: user?.tag || 'Voice State Updated',
-        iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
-      })
-      .setTitle('🔊 Voice Activity');
-
     const avatarUrl = user?.displayAvatarURL?.({ size: 256 }) || null;
-    if (avatarUrl) embed.setThumbnail(avatarUrl);
+    const embed = createLogEmbed({
+      accentColor,
+      emoji: '🔊',
+      label: 'Voice Activity',
+      iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
+      thumbnailURL: avatarUrl || undefined,
+    });
 
     const descriptionLines = [];
     if (joined) {
@@ -436,8 +483,13 @@ async function handleVoiceStateUpdate(oldState, newState) {
       });
     }
 
-    const footer = buildUserFooter(user, null, identifier);
-    if (footer) embed.setFooter(footer);
+    embed.addFields({
+      name: 'Member',
+      value: formatUserReference(user, identifier),
+      inline: true,
+    });
+
+    embed.setFooter(buildUserFooter(user, null, identifier));
 
     return { embeds: [embed] };
   });
@@ -501,20 +553,29 @@ async function handleGuildMemberUpdate(oldMember, newMember) {
   if (!changes.length) return;
 
   await dispatchLog(newMember.guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.Blurple)
-      .setAuthor({
-        name: user?.tag || 'Member Updated',
-        iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
-      })
-      .setDescription(`${userMention(user.id)} had member settings updated.`);
+    const avatarUrl = user?.displayAvatarURL?.({ size: 256 }) || null;
+    const embed = createLogEmbed({
+      accentColor: Colors.Blurple,
+      emoji: '🛠️',
+      label: 'Member Updated',
+      iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
+      thumbnailURL: avatarUrl || undefined,
+    })
+      .setDescription(
+        `${user ? userMention(user.id) : `ID: ${newMember.id}`} had member settings updated.`
+      );
+
+    embed.addFields({
+      name: 'Member',
+      value: formatUserReference(user, newMember.id),
+      inline: true,
+    });
 
     for (const change of changes) {
       embed.addFields(change);
     }
 
-    const footer = buildUserFooter(user, null, newMember.id);
-    if (footer) embed.setFooter(footer);
+    embed.setFooter(buildUserFooter(user, null, newMember.id));
 
     return { embeds: [embed] };
   });
@@ -525,14 +586,18 @@ async function handleChannelCreate(channel) {
   if (!guild) return;
 
   await dispatchLog(guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.Green)
-      .setAuthor({ name: 'Channel Created' })
+    const embed = createLogEmbed({
+      accentColor: Colors.Green,
+      emoji: '🆕',
+      label: 'Channel Created',
+      iconURL: guild.iconURL?.({ size: 128 }) || undefined,
+    })
       .setDescription(`Created ${formatChannelReference(channel, channel.id)} (${formatChannelType(channel.type)})`)
-      .addFields({ name: 'Channel ID', value: `${channel.id}` });
+      .addFields({ name: 'Channel', value: formatChannelReference(channel, channel.id), inline: true })
+      .addFields({ name: 'Type', value: formatChannelType(channel.type), inline: true });
 
     if (channel.parent) {
-      embed.addFields({ name: 'Parent', value: `${formatChannelReference(channel.parent, channel.parentId)}`, inline: true });
+      embed.addFields({ name: 'Category', value: `${formatChannelReference(channel.parent, channel.parentId)}`, inline: true });
     }
 
     if (typeof channel.nsfw === 'boolean') {
@@ -555,7 +620,7 @@ async function handleChannelCreate(channel) {
       embed.addFields({ name: 'Topic', value: trimFieldValue(channel.topic) });
     }
 
-    embed.setFooter({ text: `Channel ID: ${channel.id}` });
+    embed.setFooter(buildFooter(`Channel ID: ${channel.id}`));
 
     return { embeds: [embed] };
   });
@@ -566,15 +631,20 @@ async function handleChannelDelete(channel) {
   if (!guild) return;
 
   await dispatchLog(guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.Red)
-      .setAuthor({ name: 'Channel Deleted' })
+    const embed = createLogEmbed({
+      accentColor: Colors.Red,
+      emoji: '🗑️',
+      label: 'Channel Deleted',
+      iconURL: guild.iconURL?.({ size: 128 }) || undefined,
+    })
       .setDescription(`Deleted ${channel.name ? `#${channel.name}` : channel.id} (${formatChannelType(channel.type)})`)
-      .addFields({ name: 'Channel ID', value: `${channel.id}` });
+      .addFields({ name: 'Type', value: formatChannelType(channel.type), inline: true });
 
     if (channel.parentId) {
       embed.addFields({ name: 'Parent ID', value: `${channel.parentId}`, inline: true });
     }
+
+    embed.setFooter(buildFooter(`Channel ID: ${channel.id}`));
 
     return { embeds: [embed] };
   });
@@ -635,14 +705,19 @@ async function handleChannelUpdate(oldChannel, newChannel) {
   if (!diffs.length) return;
 
   await dispatchLog(guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.Blurple)
-      .setAuthor({ name: 'Channel Updated' })
+    const embed = createLogEmbed({
+      accentColor: Colors.Blurple,
+      emoji: '🔧',
+      label: 'Channel Updated',
+      iconURL: guild.iconURL?.({ size: 128 }) || undefined,
+    })
       .setDescription(
         `Updated ${formatChannelReference(newChannel, newChannel.id ?? oldChannel.id)} (${formatChannelType(newChannel.type)})`
       )
       .addFields({ name: 'Changes', value: trimFieldValue(diffs.join('\n')) })
-      .setFooter({ text: `Channel ID: ${newChannel.id || oldChannel.id}` });
+      .addFields({ name: 'Type', value: formatChannelType(newChannel.type), inline: true });
+
+    embed.setFooter(buildFooter(`Channel ID: ${newChannel.id || oldChannel.id}`));
 
     return { embeds: [embed] };
   });
@@ -653,14 +728,19 @@ async function handleRoleCreate(role) {
   if (!guild) return;
 
   await dispatchLog(guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.Green)
-      .setAuthor({ name: 'Role Created' })
+    const embed = createLogEmbed({
+      accentColor: Colors.Green,
+      emoji: '🛡️',
+      label: 'Role Created',
+      iconURL: guild.iconURL?.({ size: 128 }) || undefined,
+    })
       .setDescription(`Created ${roleMention(role.id)} (${role.name})`)
-      .addFields({ name: 'Role ID', value: `${role.id}` })
+      .addFields({ name: 'Role', value: roleMention(role.id), inline: true })
       .addFields({ name: 'Color', value: role.hexColor || 'Default', inline: true })
       .addFields({ name: 'Mentionable', value: boolLabel(role.mentionable), inline: true })
       .addFields({ name: 'Hoisted', value: boolLabel(role.hoist), inline: true });
+
+    embed.setFooter(buildFooter(`Role ID: ${role.id}`));
 
     return { embeds: [embed] };
   });
@@ -671,11 +751,18 @@ async function handleRoleDelete(role) {
   if (!guild) return;
 
   await dispatchLog(guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.Red)
-      .setAuthor({ name: 'Role Deleted' })
+    const embed = createLogEmbed({
+      accentColor: Colors.Red,
+      emoji: '🗑️',
+      label: 'Role Deleted',
+      iconURL: guild.iconURL?.({ size: 128 }) || undefined,
+    })
       .setDescription(`Deleted ${role.name} (${role.id})`)
-      .addFields({ name: 'Role ID', value: `${role.id}` });
+      .addFields({ name: 'Color', value: role.hexColor || 'Default', inline: true })
+      .addFields({ name: 'Hoisted', value: boolLabel(role.hoist), inline: true })
+      .addFields({ name: 'Mentionable', value: boolLabel(role.mentionable), inline: true });
+
+    embed.setFooter(buildFooter(`Role ID: ${role.id}`));
 
     return { embeds: [embed] };
   });
@@ -721,12 +808,17 @@ async function handleRoleUpdate(oldRole, newRole) {
   if (!diffs.length) return;
 
   await dispatchLog(guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.Blurple)
-      .setAuthor({ name: 'Role Updated' })
+    const embed = createLogEmbed({
+      accentColor: Colors.Blurple,
+      emoji: '🛠️',
+      label: 'Role Updated',
+      iconURL: guild.iconURL?.({ size: 128 }) || undefined,
+    })
       .setDescription(`Updated ${roleMention(newRole.id)} (${newRole.name})`)
-      .addFields({ name: 'Changes', value: trimFieldValue(diffs.join('\n')) })
-      .setFooter({ text: `Role ID: ${newRole.id}` });
+      .addFields({ name: 'Role', value: roleMention(newRole.id), inline: true })
+      .addFields({ name: 'Changes', value: trimFieldValue(diffs.join('\n')) });
+
+    embed.setFooter(buildFooter(`Role ID: ${newRole.id}`));
 
     return { embeds: [embed] };
   });
@@ -737,20 +829,26 @@ async function handleGuildBanAdd(ban) {
   if (!guild) return;
 
   await dispatchLog(guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.DarkRed)
-      .setAuthor({
-        name: user?.tag || 'User Banned',
-        iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
-      })
-      .setDescription(`${user ? userMention(user.id) : ban.userId} was banned from the server.`);
+    const avatarUrl = user?.displayAvatarURL?.({ size: 256 }) || null;
+    const embed = createLogEmbed({
+      accentColor: Colors.DarkRed,
+      emoji: '⛔',
+      label: 'User Banned',
+      iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
+      thumbnailURL: avatarUrl || undefined,
+    })
+      .setDescription(`${user ? userMention(user.id) : ban.userId} was banned from the server.`)
+      .addFields({
+        name: 'Member',
+        value: formatUserReference(user, ban.userId || user?.id),
+        inline: true,
+      });
 
     if (reason) {
       embed.addFields({ name: 'Reason', value: trimFieldValue(reason) });
     }
 
-    const footer = buildUserFooter(user, null, ban.userId || user?.id);
-    if (footer) embed.setFooter(footer);
+    embed.setFooter(buildUserFooter(user, null, ban.userId || user?.id));
 
     return { embeds: [embed] };
   });
@@ -761,20 +859,26 @@ async function handleGuildBanRemove(ban) {
   if (!guild) return;
 
   await dispatchLog(guild, () => {
-    const embed = baseEmbed()
-      .setColor(Colors.Green)
-      .setAuthor({
-        name: user?.tag || 'User Unbanned',
-        iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
-      })
-      .setDescription(`${user ? userMention(user.id) : ban.userId} was unbanned from the server.`);
+    const avatarUrl = user?.displayAvatarURL?.({ size: 256 }) || null;
+    const embed = createLogEmbed({
+      accentColor: Colors.Green,
+      emoji: '✅',
+      label: 'User Unbanned',
+      iconURL: user?.displayAvatarURL?.({ size: 128 }) || undefined,
+      thumbnailURL: avatarUrl || undefined,
+    })
+      .setDescription(`${user ? userMention(user.id) : ban.userId} was unbanned from the server.`)
+      .addFields({
+        name: 'Member',
+        value: formatUserReference(user, ban.userId || user?.id),
+        inline: true,
+      });
 
     if (reason) {
       embed.addFields({ name: 'Previous Reason', value: trimFieldValue(reason) });
     }
 
-    const footer = buildUserFooter(user, null, ban.userId || user?.id);
-    if (footer) embed.setFooter(footer);
+    embed.setFooter(buildUserFooter(user, null, ban.userId || user?.id));
 
     return { embeds: [embed] };
   });
