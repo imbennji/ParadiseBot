@@ -1,3 +1,9 @@
+/**
+ * Slash command registry and dispatcher. This module defines every public interaction supported by
+ * ParadiseBot along with the imperative handlers that execute each command. Documentation is kept
+ * close to the code to make maintenance approachable—moderation commands, Steam integration, and
+ * music playback all live here.
+ */
 const {
   SlashCommandBuilder,
   REST,
@@ -31,6 +37,11 @@ const {
 const { getRankStats } = require('./xp');
 const { grantLinkPermit, PERMIT_DURATION_MS } = require('./permits');
 
+/**
+ * Raw slash command definitions. These builders are transformed into JSON during startup and sent to
+ * Discord using the REST API. When adding new commands remember to document the corresponding
+ * handler below so future contributors understand the guardrails and side-effects.
+ */
 const commandBuilders = [
   new SlashCommandBuilder()
     .setName('setchannel')
@@ -248,9 +259,23 @@ const commandBuilders = [
     ),
 ];
 
+/**
+ * REST client used solely for slash-command registration. The runtime interactions go through the
+ * gateway connection provided by the shared client but registration must use the HTTP API.
+ */
 const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+
+/**
+ * Discord only allows bulk-deleting messages younger than 14 days. Anything older has to be deleted
+ * individually which is why `handleClearChat` maintains both bulk and manual queues.
+ */
 const BULK_DELETE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
+/**
+ * Registers (or updates) the slash command definitions with Discord. The function targets either a
+ * single development guild for faster iteration or the global command registry when no override is
+ * provided.
+ */
 async function registerCommandsOnStartup() {
   const t = time('CMD:register');
   const payload = commandBuilders.map(c => c.toJSON());
@@ -269,6 +294,11 @@ async function registerCommandsOnStartup() {
   } finally { t.end(); }
 }
 
+/**
+ * Persists the mapping between a semantic announcement kind and a concrete text channel.
+ * Moderators must grant the bot minimal permissions before the mapping is stored to prevent silent
+ * failures later when announcements attempt to send embeds.
+ */
 async function handleSetChannel(interaction) {
   const kind = normalizeKind(interaction.options.getString('type', true));
   if (!kind) return interaction.reply({ content: 'Unknown type.', ephemeral: true });
@@ -305,6 +335,10 @@ async function handleSetChannel(interaction) {
   return interaction.reply({ content: `✅ Channel set for **${kind.replaceAll('_',' ')}** → ${target}.`, ephemeral: true });
 }
 
+/**
+ * Links the invoking Discord user to a Steam profile. We validate the mapping, respect account
+ * locks so a single Steam account cannot be shared, and seed future polling via the `links` table.
+ */
 async function handleLinkSteam(interaction) {
   const input = interaction.options.getString('profile', true).trim();
   await interaction.deferReply({ ephemeral: true });
@@ -329,6 +363,11 @@ async function handleLinkSteam(interaction) {
   return interaction.editReply(`✅ Linked <@${interaction.user.id}> → **${steamId}**.`);
 }
 
+/**
+ * Removes all traces of the user's Steam data from the guild, including cached progress tables and
+ * ownership information. This command is intentionally aggressive so privacy requests are honoured
+ * immediately.
+ */
 async function handleUnlinkSteam(interaction) {
   const g = interaction.guildId, u = interaction.user.id;
   const link = await dbGet('SELECT steam_id FROM links WHERE guild_id=? AND user_id=?', [g, u]);
@@ -352,6 +391,11 @@ async function handleUnlinkSteam(interaction) {
   return interaction.reply({ content: '✅ Unlinked and all cached data cleared.', ephemeral: true });
 }
 
+/**
+ * Comprehensive health check that exercises the database, the Steam Web API, and optionally a
+ * user-supplied profile resolution. Returning granular errors helps moderators differentiate between
+ * networking issues and misconfiguration.
+ */
 async function handlePingSteam(interaction) {
   const profile = interaction.options.getString('profile', false)?.trim();
   await interaction.deferReply({ ephemeral: true });
@@ -376,6 +420,10 @@ async function handlePingSteam(interaction) {
   return interaction.editReply(`✅ Health OK. DB ✅, Steam API ✅`);
 }
 
+/**
+ * Ensures the static leaderboard embed exists in the invoking channel. The heavy lifting lives in
+ * `ensureLeaderboardMessage`, this wrapper simply validates permissions and provides user feedback.
+ */
 async function handleLeaderboard(interaction) {
   if (interaction.options.getSubcommand() === 'init') {
     const channel = interaction.channel;
@@ -389,6 +437,10 @@ async function handleLeaderboard(interaction) {
   }
 }
 
+/**
+ * Creates or moves the Steam Game Sales embed. Similar to the leaderboard command this is mostly a
+ * permissions guard that delegates the actual embed management to the sales module.
+ */
 async function handleSalesCmd(interaction) {
   if (interaction.options.getSubcommand() === 'init') {
     const channel = interaction.channel;
@@ -402,12 +454,22 @@ async function handleSalesCmd(interaction) {
   }
 }
 
+/**
+ * Constructs an audit-log friendly reason string that contains both the moderator identity and the
+ * provided rationale. Discord caps audit log reasons at 512 characters, so we enforce the limit
+ * defensively.
+ */
 function getAuditReason(interaction, reason) {
   const base = reason?.trim() ? reason.trim() : 'No reason provided';
   const actor = `${interaction.user.tag ?? interaction.user.username} (${interaction.user.id})`;
   return `${actor}: ${base}`.slice(0, 512);
 }
 
+/**
+ * Performs a series of safety checks before moderators act on a guild member: it prevents
+ * self-targeting, protects the server owner and the bot, and validates role hierarchy so that only
+ * higher ranked moderators can escalate actions.
+ */
 function ensureCanActOn(interaction, member) {
   if (!member) return true;
   if (member.id === interaction.user.id) return false;
@@ -426,6 +488,10 @@ function ensureCanActOn(interaction, member) {
   }
 }
 
+/**
+ * Kicks a member from the guild after confirming the moderator outranks the target and the bot has
+ * sufficient permissions. A courtesy DM is sent to the user when possible.
+ */
 async function handleKick(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -455,8 +521,16 @@ async function handleKick(interaction) {
   await member.user.send(`You have been kicked from **${interaction.guild.name}**. Reason: ${reason}`).catch(() => {});
 }
 
+/**
+ * Discord accepts message deletion durations in seconds; this constant converts the user facing day
+ * selector into the unit expected by the API.
+ */
 const BAN_DELETE_SECONDS = 24 * 60 * 60;
 
+/**
+ * Bans a user (or guild member) and optionally deletes up to seven days of message history. The
+ * handler guards against moderators banning themselves or the bot while respecting role hierarchy.
+ */
 async function handleBan(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -499,6 +573,10 @@ async function handleBan(interaction) {
   await user.send(`You have been banned from **${interaction.guild.name}**. Reason: ${reason}`).catch(() => {});
 }
 
+/**
+ * Mapping of slash-command option values to millisecond durations. Keeping the conversion table
+ * local makes it easy to audit which timeout lengths we support without scanning Discord's docs.
+ */
 const TIMEOUT_DURATIONS = {
   '5m': 5 * 60 * 1000,
   '10m': 10 * 60 * 1000,
@@ -510,6 +588,10 @@ const TIMEOUT_DURATIONS = {
   '7d': 7 * 24 * 60 * 60 * 1000,
 };
 
+/**
+ * Applies Discord's native timeout feature to a member for a pre-defined duration. The function
+ * shares permission checks with the other moderation commands so behaviour is consistent.
+ */
 async function handleTimeout(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -545,6 +627,11 @@ async function handleTimeout(interaction) {
   await member.user.send(`You have been timed out in **${interaction.guild.name}** for ${durationKey}. Reason: ${reason}`).catch(() => {});
 }
 
+/**
+ * Removes a small number of recent messages (optionally filtered by author) using Discord's bulk
+ * deletion API. This is designed for quick cleanup jobs where the messages are recent enough to be
+ * purged in a single request.
+ */
 async function handlePurge(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -576,6 +663,11 @@ async function handlePurge(interaction) {
   await interaction.editReply(`🧹 Deleted ${deleted.size} message(s)${scope}.`);
 }
 
+/**
+ * Iteratively clears up to 200 messages from a channel, gracefully degrading to manual deletions for
+ * messages older than 14 days. The implementation favours predictable progress reporting so
+ * moderators understand what happened.
+ */
 async function handleClearChat(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -712,6 +804,10 @@ async function handleClearChat(interaction) {
   await interaction.editReply(`🧼 Deleted ${deletedCount} message(s).${suffix}${short}`);
 }
 
+/**
+ * Sends a DM warning to a member and records the action to the logs. Because DMs can fail (user has
+ * DMs disabled) we surface the result back to the moderator.
+ */
 async function handleWarn(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -739,6 +835,10 @@ async function handleWarn(interaction) {
   await interaction.editReply(`⚠️ Warned ${user.tag}.${dmResult ? ' They were notified via DM.' : ' I could not DM them.'}`);
 }
 
+/**
+ * Grants a temporary link posting permit to a user by inserting a record into the permit cache. The
+ * sales module reads these permits to exempt trusted users from automatic deletions.
+ */
 async function handlePermit(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -758,6 +858,10 @@ async function handlePermit(interaction) {
   await interaction.editReply(`✅ ${target} can post links for the next ${minutes} minutes (until ~${expiresIn}).`);
 }
 
+/**
+ * Displays Paradise XP stats for the invoking user (or an optional target). The response is concise
+ * enough to post in-channel which encourages friendly competition.
+ */
 async function handleRank(interaction) {
   const target = interaction.options.getUser('user') || interaction.user;
   const stats = await getRankStats(interaction.guildId, target.id);
@@ -778,6 +882,11 @@ async function handleRank(interaction) {
   });
 }
 
+/**
+ * Primary dispatcher invoked by `interactionCreate`. Each case delegates to the appropriately
+ * documented handler above so the switch statement acts as a map between slash command names and
+ * business logic.
+ */
 async function handleChatCommand(interaction) {
   switch (interaction.commandName) {
     case 'setchannel':   await handleSetChannel(interaction);  break;

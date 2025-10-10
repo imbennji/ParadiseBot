@@ -1,3 +1,9 @@
+/**
+ * Centralised configuration loader for ParadiseBot. The module eagerly validates the environment
+ * to ensure the process fails fast when required credentials are missing. Each exported constant is
+ * documented inline so that developers can understand the default value, expected units, and
+ * purpose without hunting through usage sites.
+ */
 const { log } = require('./logger');
 
 const DISCORD_TOKEN     = process.env.DISCORD_TOKEN;
@@ -10,6 +16,11 @@ if (!DISCORD_TOKEN || !DISCORD_CLIENT_ID || !STEAM_API_KEY) {
   process.exit(1);
 }
 
+/**
+ * Database connection parameters that are passed directly to `mysql2`. The defaults make local
+ * development straightforward while still allowing every option to be overridden through
+ * environment variables at deploy time.
+ */
 const DB_CFG = {
   host: process.env.DB_HOST || '127.0.0.1',
   port: +(process.env.DB_PORT || 3306),
@@ -23,6 +34,8 @@ const DB_CFG = {
 
 const STEAM_HOST = 'https://api.steampowered.com';
 
+// GitHub integration settings, used by the announcer and webhook server to mirror repository
+// activity into Discord. Each value is normalised to a predictable type (boolean, number, etc.).
 const GITHUB_ANNOUNCER_ENABLED = (process.env.GITHUB_ANNOUNCER_ENABLED ?? 'false').toLowerCase() === 'true';
 const GITHUB_OWNER = process.env.GITHUB_OWNER || null;
 const GITHUB_REPO = process.env.GITHUB_REPO || null;
@@ -37,6 +50,13 @@ const GITHUB_WEBHOOK_PORT = parsePort(process.env.GITHUB_WEBHOOK_PORT || null);
 const GITHUB_WEBHOOK_PATH = normalizeWebhookPath(process.env.GITHUB_WEBHOOK_PATH);
 const GITHUB_WEBHOOK_SECRET = process.env.GITHUB_WEBHOOK_SECRET || null;
 
+/**
+ * Normalises a port definition so callers receive either a valid TCP port (1-65535) or `null` when
+ * the input cannot be interpreted. Returning `null` keeps downstream branching concise.
+ *
+ * @param {string|number|null|undefined} input - Raw environment variable value.
+ * @returns {number|null} A valid port number or `null` if the value should be ignored.
+ */
 function parsePort(input) {
   if (!input) return null;
   const n = Number.parseInt(String(input), 10);
@@ -44,6 +64,14 @@ function parsePort(input) {
   return n;
 }
 
+/**
+ * Ensures the webhook path always starts with a slash and falls back to `/github-webhook` when the
+ * environment variable is omitted. GitHub expects a relative path component so we keep the
+ * transformation extremely small and predictable.
+ *
+ * @param {string|null|undefined} input - Desired webhook path, possibly blank.
+ * @returns {string} A sanitised path beginning with `/`.
+ */
 function normalizeWebhookPath(input) {
   if (!input) return '/github-webhook';
   const trimmed = String(input).trim();
@@ -51,6 +79,14 @@ function normalizeWebhookPath(input) {
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 }
 
+/**
+ * Converts a hex, decimal, or prefixed color string into an integer Discord embed color. The
+ * fallback is returned when parsing fails so that the bot always has a deterministic colour.
+ *
+ * @param {string|number|null|undefined} input - Value from configuration.
+ * @param {number} fallbackInt - Default colour to return when parsing fails.
+ * @returns {number} Integer representation ready for Discord embeds.
+ */
 function parseColor(input, fallbackInt) {
   try {
     if (!input) return fallbackInt;

@@ -1,3 +1,7 @@
+/**
+ * Detects newly acquired or removed games for linked members and posts announcements to Discord. The
+ * loop also keeps the leaderboard stats fresh by updating playtime totals alongside ownership data.
+ */
 const { EmbedBuilder } = require('discord.js');
 const { log, time } = require('../logger');
 const { dbAll, dbRun, dbGet } = require('../db');
@@ -14,6 +18,10 @@ const { getOwnedGames, getRecentlyPlayed, getAppNameCached } = require('../steam
 const { upsertPlaytimeStats } = require('./leaderboard');
 const { appIconUrl } = require('../utils/steam');
 
+/**
+ * Some older accounts add dozens of games at once which looks noisy in Discord. This helper marks the
+ * historical burst as "seeded" so the loop ignores it during regular polling.
+ */
 async function retroMarkSeededBursts(gid, uid) {
   const totalRow = await dbGet('SELECT COUNT(*) AS total FROM owned_seen WHERE guild_id=? AND user_id=?', [gid, uid]);
   const total = Number(totalRow?.total || 0);
@@ -33,6 +41,10 @@ async function retroMarkSeededBursts(gid, uid) {
   }
 }
 
+/**
+ * Schedules the owned-games poll. Enabling `runNow` ensures the first poll executes immediately after
+ * startup.
+ */
 function scheduleOwnedLoop(runNow = false) {
   const run = async () => {
     try { await monitorOwnedAdds(); }
@@ -43,6 +55,10 @@ function scheduleOwnedLoop(runNow = false) {
   if (runNow) run();
 }
 
+/**
+ * Main loop responsible for synchronising owned-game records, announcing additions/removals, and
+ * updating playtime stats.
+ */
 async function monitorOwnedAdds() {
   const t = time('POLL:owned');
   const guildIds = await getConfiguredGuildIds();

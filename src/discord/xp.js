@@ -1,3 +1,8 @@
+/**
+ * XP system for rewarding active chat participation. XP accrues based on message activity with a
+ * cooldown to discourage spam. When a user levels up we post a celebratory message in the configured
+ * channel (or the current channel as a fallback).
+ */
 const { log } = require('../logger');
 const { dbGet, dbRun } = require('../db');
 const { CHANNEL_KINDS, getAnnouncementChannel, hasBotPerms } = require('./channels');
@@ -7,14 +12,25 @@ const XP_MIN_PER_MESSAGE = 15;
 const XP_MAX_PER_MESSAGE = 25;
 const MIN_MESSAGE_LENGTH = 5;
 
+/**
+ * Picks a random XP value between the configured min/max bounds. This small variance keeps the
+ * system feeling organic without introducing large swings.
+ */
 function randomXpGain() {
   return XP_MIN_PER_MESSAGE + Math.floor(Math.random() * (XP_MAX_PER_MESSAGE - XP_MIN_PER_MESSAGE + 1));
 }
 
+/**
+ * Calculates the XP required to progress from the given level to the next. The formula mirrors the
+ * classic quadratic curve used by many games.
+ */
 function xpToLevelUp(level) {
   return 5 * level * level + 50 * level + 100;
 }
 
+/**
+ * Computes the cumulative XP required to reach a specific level.
+ */
 function totalXpForLevel(level) {
   let total = 0;
   for (let i = 0; i < level; i += 1) {
@@ -23,10 +39,16 @@ function totalXpForLevel(level) {
   return total;
 }
 
+/**
+ * Retrieves the XP progress row for a guild/user pair.
+ */
 async function getXpRow(guildId, userId) {
   return dbGet('SELECT xp, level, last_message_at FROM xp_progress WHERE guild_id=? AND user_id=?', [guildId, userId]);
 }
 
+/**
+ * Filters out trivial or empty messages. Attachments and stickers still count to reward rich media.
+ */
 function hasEarnableContent(message) {
   if (message.content && message.content.trim().length >= MIN_MESSAGE_LENGTH) return true;
   if (message.attachments?.size) return true;
@@ -34,6 +56,10 @@ function hasEarnableContent(message) {
   return false;
 }
 
+/**
+ * Primary XP accrual routine invoked for every message. It enforces cooldowns, persists the new XP
+ * total, and posts a level-up announcement when appropriate.
+ */
 async function awardMessageXp(message) {
   if (!message?.guildId) return;
   if (message.author?.bot) return;
@@ -106,6 +132,10 @@ async function awardMessageXp(message) {
   }
 }
 
+/**
+ * Aggregates XP metrics for presentation in the `/rank` command. Returns `null` when the user has no
+ * progress yet so the caller can show a friendly hint.
+ */
 async function getRankStats(guildId, userId) {
   const row = await dbGet('SELECT xp, level FROM xp_progress WHERE guild_id=? AND user_id=?', [guildId, userId]);
   if (!row) return null;

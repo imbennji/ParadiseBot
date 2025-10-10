@@ -1,3 +1,7 @@
+/**
+ * Monitors what linked members are currently playing and announces session starts/ends. The loop
+ * waits for a configurable confirmation window before announcing to avoid noise from short launches.
+ */
 const { EmbedBuilder } = require('discord.js');
 const { log, time } = require('../logger');
 const { dbAll, dbRun } = require('../db');
@@ -14,6 +18,9 @@ const { CHANNEL_KINDS, getAnnouncementChannel, getConfiguredGuildIds, hasBotPerm
 const { getCurrentGame, getAppNameCached } = require('../steam/api');
 const { fmtDuration } = require('../utils/text');
 
+/**
+ * Schedules the now-playing poll. Passing `runNow` forces an initial run immediately after startup.
+ */
 function scheduleNowPlayingLoop(runNow = false) {
   const run = async () => {
     try { await monitorNowPlaying(); }
@@ -24,6 +31,10 @@ function scheduleNowPlayingLoop(runNow = false) {
   if (runNow) run();
 }
 
+/**
+ * Core polling loop that inspects each linked Steam account, records session information, and sends
+ * announcements when thresholds are met.
+ */
 async function monitorNowPlaying() {
   const t = time('POLL:nowplaying');
   const guildIds = await getConfiguredGuildIds();

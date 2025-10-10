@@ -1,9 +1,20 @@
+/**
+ * Database bootstrapper and query helper functions. This module is intentionally tiny so that
+ * higher-level modules interact with a constrained surface area: `dbGet` for single rows, `dbAll`
+ * for multi-row selects, and `dbRun` for writes. Schema migrations that only require new tables or
+ * columns live here as part of the startup sequence.
+ */
 const mysql = require('mysql2/promise');
 const { time, log, DEBUG_SQL } = require('./logger');
 const { DB_CFG } = require('./config');
 
 let pool;
 
+/**
+ * Creates the shared MySQL connection pool and ensures all required tables exist. The schema is
+ * intentionally co-located with the application code to remove external migration dependencies and
+ * to make first-time setup a single command (start the bot and it provisions itself).
+ */
 async function initDb() {
   const t = time('DB:init');
   pool = mysql.createPool(DB_CFG);
@@ -176,6 +187,14 @@ async function initDb() {
   t.end();
 }
 
+/**
+ * Executes a query that is expected to return zero or one row.
+ *
+ * @template T
+ * @param {string} sql - Prepared statement with placeholders.
+ * @param {Array} [params=[]] - Values bound to the placeholders.
+ * @returns {Promise<T|null>} First row or `null` when no results are returned.
+ */
 async function dbGet(sql, params = []) {
   const t = time('DB:get');
   DEBUG_SQL && log.tag('SQL').debug(sql, JSON.stringify(params));
@@ -184,6 +203,14 @@ async function dbGet(sql, params = []) {
   log.tag('DB').trace(`get -> ${row ? '1 row' : '0 rows'}`);
   t.end(); return row;
 }
+/**
+ * Executes a read-only query and returns every row.
+ *
+ * @template T
+ * @param {string} sql - Prepared statement with placeholders.
+ * @param {Array} [params=[]] - Values bound to the placeholders.
+ * @returns {Promise<T[]>} Result set.
+ */
 async function dbAll(sql, params = []) {
   const t = time('DB:all');
   DEBUG_SQL && log.tag('SQL').debug(sql, JSON.stringify(params));
@@ -191,6 +218,13 @@ async function dbAll(sql, params = []) {
   log.tag('DB').trace(`all -> ${rows.length} rows`);
   t.end(); return rows;
 }
+/**
+ * Executes a statement that modifies rows (INSERT/UPDATE/DELETE).
+ *
+ * @param {string} sql - Prepared statement with placeholders.
+ * @param {Array} [params=[]] - Values bound to the placeholders.
+ * @returns {Promise<import('mysql2').ResultSetHeader>} Raw driver response for introspection.
+ */
 async function dbRun(sql, params = []) {
   const t = time('DB:run');
   DEBUG_SQL && log.tag('SQL').debug(sql, JSON.stringify(params));
@@ -198,6 +232,14 @@ async function dbRun(sql, params = []) {
   log.tag('DB').trace(`run -> affectedRows=${res?.affectedRows ?? 0}`);
   t.end(); return res;
 }
+/**
+ * Adds a column to an existing table when it is missing. We avoid altering the table when the
+ * column already exists to keep repeated startups idempotent.
+ *
+ * @param {string} table - Name of the table to alter.
+ * @param {string} column - Column that should be present.
+ * @param {string} columnDef - SQL definition for the column.
+ */
 async function ensureColumn(table, column, columnDef) {
   const row = await dbGet(
     'SELECT 1 AS ok FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME=? AND COLUMN_NAME=? LIMIT 1',
@@ -209,6 +251,12 @@ async function ensureColumn(table, column, columnDef) {
   }
 }
 
+/**
+ * Provides direct access to the underlying connection pool when specialised queries are required.
+ * Throws if the pool has not been initialised so callers fail loudly instead of operating on `null`.
+ *
+ * @returns {import('mysql2/promise').Pool} Shared connection pool.
+ */
 function getPool() {
   if (!pool) throw new Error('DB pool not initialized');
   return pool;

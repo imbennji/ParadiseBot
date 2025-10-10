@@ -1,4 +1,20 @@
 // file: index.js
+/**
+ * Application entrypoint that wires together configuration, third-party clients, recurring loops,
+ * and Discord event handlers. This file is intentionally verbose because it acts as the "main"
+ * orchestrator for ParadiseBot and therefore documents the high-level flow of the application.
+ *
+ * The majority of the heavy lifting is delegated to individual modules within the `src/` tree.
+ * Those modules expose small, well-documented APIs that this bootstrapper coordinates:
+ *
+ * - configuration loading and validation (`src/config`)
+ * - Discord client initialization and command handling (`src/discord`)
+ * - scheduled polling loops (`src/loops` and `src/sales`)
+ * - external service integrations such as GitHub webhooks (`src/github`)
+ *
+ * Having this commentary near the top helps new contributors understand where specific
+ * responsibilities live before diving into the more focused modules.
+ */
 require('dotenv').config();
 
 const axios = require('axios').default;
@@ -59,11 +75,21 @@ process.on('unhandledRejection', (e) => log.tag('UNHANDLED').error('Promise reje
 process.on('uncaughtException', (e) => log.tag('UNCAUGHT').error('Exception:', e?.stack || e));
 
 const httpTag = log.tag('HTTP');
+/**
+ * Observability helper attached to Axios so that every outbound HTTP request is logged with both
+ * metadata and timing information. The interceptor stores the start time on the request config so
+ * that the response interceptor can compute the total request latency later on.
+ */
 axios.interceptors.request.use((cfg) => {
   cfg.metadata = { start: process.hrtime.bigint() };
   DEBUG_HTTP && httpTag.debug(`→ ${cfg.method?.toUpperCase()} ${redact(cfg.url || `${cfg.baseURL || ''}${cfg.urlPath || ''}`)} timeout=${cfg.timeout}ms`);
   return cfg;
 });
+/**
+ * Response interceptor that complements the request hook above. Successful responses have their
+ * duration logged at debug level when HTTP debugging is enabled. Failures include both the
+ * duration and the error payload so that transient outages can be diagnosed quickly.
+ */
 axios.interceptors.response.use(
   (res) => {
     if (DEBUG_HTTP) {
@@ -120,6 +146,13 @@ log.info('Config:', JSON.stringify({
 registerLogging();
 startGithubWebhookServer();
 
+/**
+ * The main readiness handler performs several critical steps:
+ * 1. Inform logs that the bot is authenticated.
+ * 2. Register slash commands (ensuring new deployments stay in sync).
+ * 3. Kick off every recurring loop that powers achievements, sales, GitHub integration, etc.
+ * 4. Optionally perform an aggressive warm-up of the sales cache if configured to do so.
+ */
 client.once(Events.ClientReady, async (c) => {
   log.tag('READY').info(`Logged in as ${c.user.tag}`);
   await registerCommandsOnStartup();
@@ -134,6 +167,12 @@ client.once(Events.ClientReady, async (c) => {
   if (SALES_FULL_WARMER_ENABLED) startFullSalesWarm(SALES_REGION_CC);
 });
 
+/**
+ * All Discord interaction traffic flows through this handler. It routes chat input commands to the
+ * command registry, button presses to the sales module, and guarantees that unexpected exceptions
+ * surface to the user in an ephemeral response. By centralising the try/catch we prevent
+ * unhandled promise rejections from leaking into the process and crashing the bot.
+ */
 client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) {
@@ -153,6 +192,12 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+/**
+ * Message handler responsible for per-message XP, moderation enforcement, and link-permit checks.
+ * The logic intentionally performs early returns to keep the "happy path" inexpensive—bots and
+ * DMs are ignored, moderators bypass the checks, and only messages containing links are examined
+ * for permit violations.
+ */
 client.on(Events.MessageCreate, async (message) => {
   try {
     await awardMessageXp(message);

@@ -1,9 +1,17 @@
+/**
+ * Slash command handlers for the music subsystem. The commands interact with the shared player
+ * singleton exposed by `player.js` and support queueing tracks, skipping, and displaying the queue.
+ */
 const { EmbedBuilder, PermissionsBitField } = require('discord.js');
 const { resolveTrack } = require('./sources');
 const { ensureGuildSubscription, getSubscription, destroySubscription } = require('./player');
 const { CHANNEL_KINDS, getAnnouncementChannel } = require('../discord/channels');
 const { log } = require('../logger');
 
+/**
+ * Formats a millisecond duration into `H:MM:SS` or `MM:SS` depending on the length. Live streams are
+ * labelled accordingly.
+ */
 function formatDuration(ms) {
   if (!ms) return 'Live';
   const totalSeconds = Math.floor(ms / 1000);
@@ -17,6 +25,10 @@ function formatDuration(ms) {
   return parts.join(':');
 }
 
+/**
+ * Binds to the player events so every time a new track starts we announce it in the configured music
+ * channel. The handler is idempotent to avoid double-registration.
+ */
 function attachAnnouncements(subscription, guild) {
   if (subscription.__musicAnnouncementBound) return;
   const handler = async (track) => {
@@ -59,6 +71,10 @@ function attachAnnouncements(subscription, guild) {
   subscription.__musicAnnouncementBound = true;
 }
 
+/**
+ * Ensures the invoking member is in a voice channel and that the bot has permission to join. The
+ * returned subscription represents the active audio connection.
+ */
 async function ensureMemberSubscription(interaction) {
   if (!interaction.guild) {
     throw new Error('This command can only be used in a server.');
@@ -82,6 +98,10 @@ async function ensureMemberSubscription(interaction) {
   return { subscription, voiceChannel, isNew };
 }
 
+/**
+ * Implements `/music join`. The command connects the bot to the caller's voice channel or confirms
+ * that it is already present.
+ */
 async function handleJoin(interaction) {
   try {
     const { subscription, voiceChannel, isNew } = await ensureMemberSubscription(interaction);
@@ -95,6 +115,9 @@ async function handleJoin(interaction) {
   }
 }
 
+/**
+ * Implements `/music play`. Resolves the provided query into a playable track and enqueues it.
+ */
 async function handlePlay(interaction) {
   const query = interaction.options.getString('query', true);
   let context;
@@ -116,6 +139,9 @@ async function handlePlay(interaction) {
   }
 }
 
+/**
+ * Implements `/music skip` by skipping the current track if one is active.
+ */
 async function handleSkip(interaction) {
   const sub = getSubscription(interaction.guildId);
   if (!sub || !sub.current) {
@@ -125,6 +151,9 @@ async function handleSkip(interaction) {
   await interaction.reply({ content: skipped ? '⏭️ Skipping the current track…' : 'I was not playing anything.' });
 }
 
+/**
+ * Implements `/music queue`. Displays the current and upcoming tracks to the user.
+ */
 async function handleQueue(interaction) {
   const sub = getSubscription(interaction.guildId);
   if (!sub || (!sub.current && sub.queue.length === 0)) {
@@ -155,6 +184,9 @@ async function handleQueue(interaction) {
   await interaction.reply({ embeds: [embed] });
 }
 
+/**
+ * Implements `/music leave`. Disconnects the audio player and clears the queue.
+ */
 async function handleLeave(interaction) {
   const destroyed = destroySubscription(interaction.guildId);
   if (destroyed) {
@@ -164,6 +196,10 @@ async function handleLeave(interaction) {
   }
 }
 
+/**
+ * Dispatches music subcommands. The outer slash command handler in `commands.js` forwards requests
+ * here.
+ */
 async function handleMusicCommand(interaction) {
   const sub = interaction.options.getSubcommand();
   switch (sub) {
