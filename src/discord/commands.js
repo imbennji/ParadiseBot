@@ -304,11 +304,11 @@ async function registerCommandsOnStartup() {
       log.tag('CMD').info(`Registering ${payload.length} commands → guild ${DEV_GUILD_ID}`);
       await rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DEV_GUILD_ID), { body: payload });
       log.tag('CMD').info('Guild commands registered.');
-    } else {
-      log.tag('CMD').info(`Registering ${payload.length} commands → GLOBAL`);
-      await rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: payload });
-      log.tag('CMD').info('Global commands registered (may take a bit to propagate).');
     }
+
+    log.tag('CMD').info(`Registering ${payload.length} commands → GLOBAL`);
+    await rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: payload });
+    log.tag('CMD').info('Global commands registered (may take a bit to propagate).');
   } catch (err) {
     log.tag('CMD').error('Registration failed:', err?.stack || err);
   } finally { t.end(); }
