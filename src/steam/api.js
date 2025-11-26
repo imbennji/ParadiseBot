@@ -172,6 +172,39 @@ async function getOwnedGames(steamId) {
   }));
 }
 
+/**
+ * Attempts to fetch an install size estimate for a given app ID using public SteamCMD metadata.
+ * Not every app exposes size information; in those cases `null` is returned so callers can
+ * gracefully report partial coverage.
+ */
+async function getAppInstallSize(appid) {
+  try {
+    const t = time('HTTP:SteamCMD:info');
+    const { data } = await axios.get(`https://api.steamcmd.net/v1/info/${appid}`, { timeout: 20000 });
+    t.end();
+
+    const appData = data?.data?.[appid];
+    const depots = appData?.data?.depots || appData?.depots;
+    if (!depots || typeof depots !== 'object') return null;
+
+    let total = 0;
+    let counted = 0;
+    for (const [depotId, depot] of Object.entries(depots)) {
+      if (!/^\d+$/.test(depotId)) continue;
+      const manifestSize = depot?.manifests?.public?.size || depot?.manifests?.public?.size_original;
+      const depotSize = depot?.maxsize || depot?.size || manifestSize;
+      if (Number.isFinite(depotSize)) {
+        total += Number(depotSize);
+        counted += 1;
+      }
+    }
+    return counted > 0 ? total : null;
+  } catch (err) {
+    STEAM_API.debug(`size fetch failed appid=${appid}: ${err?.message || err}`);
+    return null;
+  }
+}
+
 module.exports = {
   parseSteamIdish,
   resolveSteamId,
@@ -183,4 +216,5 @@ module.exports = {
   getAppNameCached,
   getGlobalRarity,
   getOwnedGames,
+  getAppInstallSize,
 };

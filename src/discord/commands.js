@@ -33,6 +33,8 @@ const { ensureSalesMessage } = require('../sales/index');
 const {
   resolveSteamId,
   getRecentlyPlayed,
+  getOwnedGames,
+  getAppInstallSize,
 } = require('../steam/api');
 const { getRankStats } = require('./xp');
 const { grantLinkPermit, PERMIT_DURATION_MS } = require('./permits');
@@ -93,6 +95,15 @@ const commandBuilders = [
       opt.setName('profile')
         .setDescription('Optional vanity/profile URL/steamid64 to test resolution & a simple call')
         .setRequired(false)
+    ),
+  new SlashCommandBuilder()
+    .setName('librarysize')
+    .setDescription('Estimate a Steam user\'s total install size across their library')
+    .setDMPermission(false)
+    .addStringOption(opt =>
+      opt.setName('profile')
+        .setDescription('Steam vanity/profile URL/steamid64 to inspect')
+        .setRequired(true)
     ),
   new SlashCommandBuilder()
     .setName('leaderboard')
@@ -271,6 +282,15 @@ const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
  */
 const BULK_DELETE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
+/** Formats a byte count into a human-friendly string. */
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const idx = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+  const val = bytes / (1024 ** idx);
+  return `${val.toFixed(val >= 100 ? 0 : val >= 10 ? 1 : 2)} ${units[idx]}`;
+}
+
 /**
  * Registers (or updates) the slash command definitions with Discord. The function targets either a
  * single development guild for faster iteration or the global command registry when no override is
@@ -284,11 +304,11 @@ async function registerCommandsOnStartup() {
       log.tag('CMD').info(`Registering ${payload.length} commands → guild ${DEV_GUILD_ID}`);
       await rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DEV_GUILD_ID), { body: payload });
       log.tag('CMD').info('Guild commands registered.');
-    } else {
-      log.tag('CMD').info(`Registering ${payload.length} commands → GLOBAL`);
-      await rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: payload });
-      log.tag('CMD').info('Global commands registered (may take a bit to propagate).');
     }
+
+    log.tag('CMD').info(`Registering ${payload.length} commands → GLOBAL`);
+    await rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: payload });
+    log.tag('CMD').info('Global commands registered (may take a bit to propagate).');
   } catch (err) {
     log.tag('CMD').error('Registration failed:', err?.stack || err);
   } finally { t.end(); }
@@ -418,6 +438,66 @@ async function handlePingSteam(interaction) {
     }
   }
   return interaction.editReply(`✅ Health OK. DB ✅, Steam API ✅`);
+}
+
+/**
+ * Estimates the total install size of a Steam user's library by summing depot sizes exposed via the
+ * public SteamCMD metadata endpoint. Some titles do not publish size information; those are skipped
+ * so the total reflects a best-effort floor rather than an overestimate.
+ */
+async function handleLibrarySize(interaction) {
+  const profile = interaction.options.getString('profile', true).trim();
+  await interaction.deferReply({ ephemeral: true });
+
+  const steamId = await resolveSteamId(profile);
+  if (!steamId) {
+    return interaction.editReply('❌ Could not resolve that Steam profile. Please double-check the vanity name or SteamID64.');
+  }
+
+  let games;
+  try {
+    games = await getOwnedGames(steamId);
+  } catch (err) {
+    log.tag('CMD:librarysize').warn(`owned fetch failed steam=${steamId}:`, err?.stack || err);
+    return interaction.editReply('I could not fetch that library. The profile may be private or Steam is unreachable.');
+  }
+
+  if (!games.length) {
+    return interaction.editReply('That library appears to be empty or private.');
+  }
+
+  let cursor = 0;
+  let totalBytes = 0;
+  let counted = 0;
+  let missing = 0;
+  const concurrency = 8;
+
+  async function worker() {
+    while (cursor < games.length) {
+      const idx = cursor++;
+      const game = games[idx];
+      const size = await getAppInstallSize(game.appid);
+      if (Number.isFinite(size) && size > 0) {
+        totalBytes += size;
+        counted += 1;
+      } else {
+        missing += 1;
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  if (!counted) {
+    return interaction.editReply('I could not retrieve size data for any games in that library. The profile may be private or the games do not expose install sizes.');
+  }
+
+  const totalGames = games.length;
+  const summary = `Estimated install size for **${steamId}**: **${formatBytes(totalBytes)}** across ${counted}/${totalGames} games.`;
+  const caveat = missing ? ' Some titles did not expose size data, so the real total is likely higher.' : '';
+
+  log.tag('CMD:librarysize').info(`steam=${steamId} games=${totalGames} counted=${counted} missing=${missing} totalBytes=${totalBytes}`);
+  return interaction.editReply(summary + caveat);
 }
 
 /**
@@ -893,6 +973,7 @@ async function handleChatCommand(interaction) {
     case 'linksteam':    await handleLinkSteam(interaction);   break;
     case 'unlinksteam':  await handleUnlinkSteam(interaction); break;
     case 'pingsteam':    await handlePingSteam(interaction);   break;
+    case 'librarysize':  await handleLibrarySize(interaction); break;
     case 'leaderboard':  await handleLeaderboard(interaction); break;
     case 'sales':        await handleSalesCmd(interaction);    break;
     case 'music':        await handleMusicCommand(interaction); break;
