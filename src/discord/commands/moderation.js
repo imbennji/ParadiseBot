@@ -1,50 +1,38 @@
 /**
- * Slash command registry and dispatcher. This module defines every public interaction supported by
- * ParadiseBot along with the imperative handlers that execute each command. Documentation is kept
- * close to the code to make maintenance approachable—moderation commands, Steam integration, and
- * music playback all live here.
+ * Moderation and guild management commands: channel routing, safety actions, and cleanup tools.
+ * Utilities for permission checks and audit-friendly messaging are shared within this module.
  */
 const {
   SlashCommandBuilder,
-  REST,
-  Routes,
   PermissionsBitField,
   ChannelType,
   Collection,
 } = require('discord.js');
-const axios = require('axios').default;
-const { log, time } = require('../logger');
-const { dbRun, dbGet } = require('../db');
-const {
-  DISCORD_TOKEN,
-  DISCORD_CLIENT_ID,
-  DEV_GUILD_ID,
-  STEAM_API_KEY,
-  STEAM_HOST,
-} = require('../config');
+const { log } = require('../../logger');
+const { dbRun } = require('../../db');
 const {
   CHANNEL_KINDS,
   normalizeKind,
   hasBotPerms,
-} = require('./channels');
-const { handleMusicCommand } = require('../music/commands');
+} = require('../channels');
 const { ensureLeaderboardMessage } = require('../loops/leaderboard');
 const { ensureSalesMessage } = require('../sales/index');
-const {
-  resolveSteamId,
-  getRecentlyPlayed,
-  getOwnedGames,
-  getAppInstallSize,
-} = require('../steam/api');
-const { getRankStats } = require('./xp');
-const { grantLinkPermit, PERMIT_DURATION_MS } = require('./permits');
+const { grantLinkPermit, PERMIT_DURATION_MS } = require('../permits');
 
-/**
- * Raw slash command definitions. These builders are transformed into JSON during startup and sent to
- * Discord using the REST API. When adding new commands remember to document the corresponding
- * handler below so future contributors understand the guardrails and side-effects.
- */
-const commandBuilders = [
+const BULK_DELETE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+const BAN_DELETE_SECONDS = 24 * 60 * 60;
+const TIMEOUT_DURATIONS = {
+  '5m': 5 * 60 * 1000,
+  '10m': 10 * 60 * 1000,
+  '1h': 60 * 60 * 1000,
+  '6h': 6 * 60 * 60 * 1000,
+  '12h': 12 * 60 * 60 * 1000,
+  '1d': 24 * 60 * 60 * 1000,
+  '3d': 3 * 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+};
+
+const moderationBuilders = [
   new SlashCommandBuilder()
     .setName('setchannel')
     .setDescription('Set the channel for Paradise Bot announcements')
@@ -75,37 +63,6 @@ const commandBuilders = [
         .setRequired(false)
     ),
   new SlashCommandBuilder()
-    .setName('linksteam')
-    .setDescription('Link your Steam account (vanity, profile URL, or 64-bit SteamID)')
-    .setDMPermission(false)
-    .addStringOption(opt =>
-      opt.setName('profile')
-        .setDescription('e.g. mysteamname OR https://steamcommunity.com/id/mysteamname OR 7656119...')
-        .setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName('unlinksteam')
-    .setDescription('Unlink your Steam account in this server')
-    .setDMPermission(false),
-  new SlashCommandBuilder()
-    .setName('pingsteam')
-    .setDescription('Quick health check: DB + Steam API (optional: test a profile)')
-    .setDMPermission(false)
-    .addStringOption(opt =>
-      opt.setName('profile')
-        .setDescription('Optional vanity/profile URL/steamid64 to test resolution & a simple call')
-        .setRequired(false)
-    ),
-  new SlashCommandBuilder()
-    .setName('librarysize')
-    .setDescription('Estimate a Steam user\'s total install size across their library')
-    .setDMPermission(false)
-    .addStringOption(opt =>
-      opt.setName('profile')
-        .setDescription('Steam vanity/profile URL/steamid64 to inspect')
-        .setRequired(true)
-    ),
-  new SlashCommandBuilder()
     .setName('leaderboard')
     .setDescription('Manage the permanent leaderboard message')
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
@@ -117,42 +74,6 @@ const commandBuilders = [
     .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageGuild)
     .setDMPermission(false)
     .addSubcommand(sc => sc.setName('init').setDescription('Create/move the Steam Game Sales embed to this channel')),
-  new SlashCommandBuilder()
-    .setName('music')
-    .setDescription('Music playback controls')
-    .setDMPermission(false)
-    .addSubcommand(sc => sc.setName('join').setDescription('Summon the bot to your voice channel'))
-    .addSubcommand(sc =>
-      sc.setName('play')
-        .setDescription('Queue a song by URL or search term')
-        .addStringOption(opt =>
-          opt.setName('query')
-            .setDescription('YouTube URL or search keywords')
-            .setRequired(true)
-        )
-    )
-    .addSubcommand(sc => sc.setName('skip').setDescription('Skip the current track'))
-    .addSubcommand(sc => sc.setName('queue').setDescription('Show the current queue'))
-    .addSubcommand(sc => sc.setName('leave').setDescription('Clear the queue and leave the voice channel')),
-  new SlashCommandBuilder()
-    .setName('permit')
-    .setDescription('Temporarily allow a member to post links')
-    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages)
-    .setDMPermission(false)
-    .addUserOption(opt =>
-      opt.setName('user')
-        .setDescription('Who to permit')
-        .setRequired(true)
-    ),
-  new SlashCommandBuilder()
-    .setName('rank')
-    .setDescription('Check Paradise XP levels')
-    .setDMPermission(false)
-    .addUserOption(opt =>
-      opt.setName('user')
-        .setDescription('Who to inspect (defaults to yourself)')
-        .setRequired(false)
-    ),
   new SlashCommandBuilder()
     .setName('kick')
     .setDescription('Kick a member from this server')
@@ -268,71 +189,18 @@ const commandBuilders = [
         .setMaxLength(350)
         .setRequired(true)
     ),
+  new SlashCommandBuilder()
+    .setName('permit')
+    .setDescription('Temporarily allow a member to post links')
+    .setDefaultMemberPermissions(PermissionsBitField.Flags.ManageMessages)
+    .setDMPermission(false)
+    .addUserOption(opt =>
+      opt.setName('user')
+        .setDescription('Who to permit')
+        .setRequired(true)
+    ),
 ];
 
-/**
- * REST client used solely for slash-command registration. The runtime interactions go through the
- * gateway connection provided by the shared client but registration must use the HTTP API.
- */
-const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-
-/**
- * Discord only allows bulk-deleting messages younger than 14 days. Anything older has to be deleted
- * individually which is why `handleClearChat` maintains both bulk and manual queues.
- */
-const BULK_DELETE_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
-
-/** Formats a byte count into a human-friendly string. */
-function formatBytes(bytes) {
-  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const idx = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
-  const val = bytes / (1024 ** idx);
-  return `${val.toFixed(val >= 100 ? 0 : val >= 10 ? 1 : 2)} ${units[idx]}`;
-}
-
-/**
- * Registers (or updates) the slash command definitions with Discord. The function targets either a
- * single development guild for faster iteration or the global command registry when no override is
- * provided.
- */
-async function registerCommandsOnStartup() {
-  const t = time('CMD:register');
-  const payload = commandBuilders.map(c => c.toJSON());
-  const sleep = (ms) => new Promise(res => setTimeout(res, ms));
-
-  async function putWithRetry(label, fn) {
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        await fn();
-        log.tag('CMD').info(`${label} commands registered${attempt > 1 ? ` after ${attempt} attempts` : ''}.`);
-        return;
-      } catch (err) {
-        const resp = err?.rawError || err?.response?.data || err?.message || err;
-        log.tag('CMD').error(`${label} registration attempt ${attempt} failed:`, resp);
-        if (attempt < 3) await sleep(1000 * attempt);
-      }
-    }
-  }
-
-  try {
-    if (DEV_GUILD_ID) {
-      log.tag('CMD').info(`Registering ${payload.length} commands → guild ${DEV_GUILD_ID}`);
-      await putWithRetry('Guild', () => rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DEV_GUILD_ID), { body: payload }));
-    }
-
-    log.tag('CMD').info(`Registering ${payload.length} commands → GLOBAL`);
-    await putWithRetry('Global', () => rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: payload }));
-  } catch (err) {
-    log.tag('CMD').error('Registration failed:', err?.stack || err);
-  } finally { t.end(); }
-}
-
-/**
- * Persists the mapping between a semantic announcement kind and a concrete text channel.
- * Moderators must grant the bot minimal permissions before the mapping is stored to prevent silent
- * failures later when announcements attempt to send embeds.
- */
 async function handleSetChannel(interaction) {
   const kind = normalizeKind(interaction.options.getString('type', true));
   if (!kind) return interaction.reply({ content: 'Unknown type.', ephemeral: true });
@@ -369,155 +237,6 @@ async function handleSetChannel(interaction) {
   return interaction.reply({ content: `✅ Channel set for **${kind.replaceAll('_',' ')}** → ${target}.`, ephemeral: true });
 }
 
-/**
- * Links the invoking Discord user to a Steam profile. We validate the mapping, respect account
- * locks so a single Steam account cannot be shared, and seed future polling via the `links` table.
- */
-async function handleLinkSteam(interaction) {
-  const input = interaction.options.getString('profile', true).trim();
-  await interaction.deferReply({ ephemeral: true });
-
-  const already = await dbGet('SELECT steam_id FROM links WHERE guild_id=? AND user_id=?', [interaction.guildId, interaction.user.id]);
-  if (already) {
-    return interaction.editReply(`You already linked **${already.steam_id}** here. Use \`/unlinksteam\` first (this also clears your cached data).`);
-  }
-
-  const steamId = await resolveSteamId(input);
-  if (!steamId) throw new Error('Could not resolve that Steam profile. Make sure the URL/name/ID is valid.');
-
-  const lock = await dbGet('SELECT user_id FROM steam_account_locks WHERE steam_id=?', [steamId]);
-  if (lock && lock.user_id !== interaction.user.id) {
-    return interaction.editReply(`❌ That Steam account is already linked by another Discord user.`);
-  }
-
-  await dbRun('INSERT INTO links (guild_id, user_id, steam_id) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE steam_id=VALUES(steam_id)', [interaction.guildId, interaction.user.id, steamId]);
-  await dbRun('INSERT INTO steam_account_locks (steam_id, user_id, linked_at) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), linked_at=VALUES(linked_at)', [steamId, interaction.user.id, Math.floor(Date.now()/1000)]);
-
-  log.tag('CMD:linksteam').info(`guild=${interaction.guildId} user=${interaction.user.id} steamId=${steamId}`);
-  return interaction.editReply(`✅ Linked <@${interaction.user.id}> → **${steamId}**.`);
-}
-
-/**
- * Removes all traces of the user's Steam data from the guild, including cached progress tables and
- * ownership information. This command is intentionally aggressive so privacy requests are honoured
- * immediately.
- */
-async function handleUnlinkSteam(interaction) {
-  const g = interaction.guildId, u = interaction.user.id;
-  const link = await dbGet('SELECT steam_id FROM links WHERE guild_id=? AND user_id=?', [g, u]);
-  const steamId = link?.steam_id || null;
-
-  await dbRun('DELETE FROM links WHERE guild_id = ? AND user_id = ?', [g, u]);
-  await dbRun('DELETE FROM watermarks WHERE guild_id = ? AND user_id = ?', [g, u]);
-  await dbRun('DELETE FROM owned_seen WHERE guild_id = ? AND user_id = ?', [g, u]);
-  await dbRun('DELETE FROM ach_progress_marks WHERE guild_id = ? AND user_id = ?', [g, u]);
-  await dbRun('DELETE FROM playtime_marks WHERE guild_id = ? AND user_id = ?', [g, u]);
-  await dbRun('DELETE FROM nowplaying_state WHERE guild_id = ? AND user_id = ?', [g, u]);
-  await dbRun('DELETE FROM owned_presence WHERE guild_id = ? AND user_id = ?', [g, u]);
-  await dbRun('DELETE FROM user_game_stats WHERE guild_id = ? AND user_id = ?', [g, u]);
-
-  if (steamId) {
-    const lock = await dbGet('SELECT user_id FROM steam_account_locks WHERE steam_id=?', [steamId]);
-    if (lock && lock.user_id === u) await dbRun('DELETE FROM steam_account_locks WHERE steam_id=?', [steamId]);
-  }
-
-  log.tag('CMD:unlinksteam').info(`guild=${g} user=${u} -> cleared & unlocked`);
-  return interaction.reply({ content: '✅ Unlinked and all cached data cleared.', ephemeral: true });
-}
-
-/**
- * Comprehensive health check that exercises the database, the Steam Web API, and optionally a
- * user-supplied profile resolution. Returning granular errors helps moderators differentiate between
- * networking issues and misconfiguration.
- */
-async function handlePingSteam(interaction) {
-  const profile = interaction.options.getString('profile', false)?.trim();
-  await interaction.deferReply({ ephemeral: true });
-
-  try { await dbGet('SELECT 1 AS ok'); } catch (e) { return interaction.editReply(`❌ DB check failed: ${e.message || e}`); }
-  try {
-    const t = time('HTTP:ServerInfo');
-    await axios.get(`${STEAM_HOST}/ISteamWebAPIUtil/GetServerInfo/v1/?key=${encodeURIComponent(STEAM_API_KEY)}`, { timeout: 10000 });
-    t.end();
-  } catch (e) { return interaction.editReply(`❌ Steam API base check failed: ${e.message || e}`); }
-
-  if (profile) {
-    try {
-      const steamId = await resolveSteamId(profile);
-      if (!steamId) throw new Error('profile could not be resolved');
-      await getRecentlyPlayed(steamId);
-      return interaction.editReply(`✅ Health OK. DB ✅, Steam API ✅, Profile **${steamId}** ✅`);
-    } catch (e) {
-      return interaction.editReply(`⚠️ Basic OK (DB ✅ Steam ✅) but profile test failed: ${e.message || e}`);
-    }
-  }
-  return interaction.editReply(`✅ Health OK. DB ✅, Steam API ✅`);
-}
-
-/**
- * Estimates the total install size of a Steam user's library by summing depot sizes exposed via the
- * public SteamCMD metadata endpoint. Some titles do not publish size information; those are skipped
- * so the total reflects a best-effort floor rather than an overestimate.
- */
-async function handleLibrarySize(interaction) {
-  const profile = interaction.options.getString('profile', true).trim();
-  await interaction.deferReply({ ephemeral: true });
-
-  const steamId = await resolveSteamId(profile);
-  if (!steamId) {
-    return interaction.editReply('❌ Could not resolve that Steam profile. Please double-check the vanity name or SteamID64.');
-  }
-
-  let games;
-  try {
-    games = await getOwnedGames(steamId);
-  } catch (err) {
-    log.tag('CMD:librarysize').warn(`owned fetch failed steam=${steamId}:`, err?.stack || err);
-    return interaction.editReply('I could not fetch that library. The profile may be private or Steam is unreachable.');
-  }
-
-  if (!games.length) {
-    return interaction.editReply('That library appears to be empty or private.');
-  }
-
-  let cursor = 0;
-  let totalBytes = 0;
-  let counted = 0;
-  let missing = 0;
-  const concurrency = 8;
-
-  async function worker() {
-    while (cursor < games.length) {
-      const idx = cursor++;
-      const game = games[idx];
-      const size = await getAppInstallSize(game.appid);
-      if (Number.isFinite(size) && size > 0) {
-        totalBytes += size;
-        counted += 1;
-      } else {
-        missing += 1;
-      }
-    }
-  }
-
-  await Promise.all(Array.from({ length: concurrency }, () => worker()));
-
-  if (!counted) {
-    return interaction.editReply('I could not retrieve size data for any games in that library. The profile may be private or the games do not expose install sizes.');
-  }
-
-  const totalGames = games.length;
-  const summary = `Estimated install size for **${steamId}**: **${formatBytes(totalBytes)}** across ${counted}/${totalGames} games.`;
-  const caveat = missing ? ' Some titles did not expose size data, so the real total is likely higher.' : '';
-
-  log.tag('CMD:librarysize').info(`steam=${steamId} games=${totalGames} counted=${counted} missing=${missing} totalBytes=${totalBytes}`);
-  return interaction.editReply(summary + caveat);
-}
-
-/**
- * Ensures the static leaderboard embed exists in the invoking channel. The heavy lifting lives in
- * `ensureLeaderboardMessage`, this wrapper simply validates permissions and provides user feedback.
- */
 async function handleLeaderboard(interaction) {
   if (interaction.options.getSubcommand() === 'init') {
     const channel = interaction.channel;
@@ -531,10 +250,6 @@ async function handleLeaderboard(interaction) {
   }
 }
 
-/**
- * Creates or moves the Steam Game Sales embed. Similar to the leaderboard command this is mostly a
- * permissions guard that delegates the actual embed management to the sales module.
- */
 async function handleSalesCmd(interaction) {
   if (interaction.options.getSubcommand() === 'init') {
     const channel = interaction.channel;
@@ -548,22 +263,12 @@ async function handleSalesCmd(interaction) {
   }
 }
 
-/**
- * Constructs an audit-log friendly reason string that contains both the moderator identity and the
- * provided rationale. Discord caps audit log reasons at 512 characters, so we enforce the limit
- * defensively.
- */
 function getAuditReason(interaction, reason) {
   const base = reason?.trim() ? reason.trim() : 'No reason provided';
   const actor = `${interaction.user.tag ?? interaction.user.username} (${interaction.user.id})`;
   return `${actor}: ${base}`.slice(0, 512);
 }
 
-/**
- * Performs a series of safety checks before moderators act on a guild member: it prevents
- * self-targeting, protects the server owner and the bot, and validates role hierarchy so that only
- * higher ranked moderators can escalate actions.
- */
 function ensureCanActOn(interaction, member) {
   if (!member) return true;
   if (member.id === interaction.user.id) return false;
@@ -582,10 +287,6 @@ function ensureCanActOn(interaction, member) {
   }
 }
 
-/**
- * Kicks a member from the guild after confirming the moderator outranks the target and the bot has
- * sufficient permissions. A courtesy DM is sent to the user when possible.
- */
 async function handleKick(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -615,16 +316,6 @@ async function handleKick(interaction) {
   await member.user.send(`You have been kicked from **${interaction.guild.name}**. Reason: ${reason}`).catch(() => {});
 }
 
-/**
- * Discord accepts message deletion durations in seconds; this constant converts the user facing day
- * selector into the unit expected by the API.
- */
-const BAN_DELETE_SECONDS = 24 * 60 * 60;
-
-/**
- * Bans a user (or guild member) and optionally deletes up to seven days of message history. The
- * handler guards against moderators banning themselves or the bot while respecting role hierarchy.
- */
 async function handleBan(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -667,25 +358,6 @@ async function handleBan(interaction) {
   await user.send(`You have been banned from **${interaction.guild.name}**. Reason: ${reason}`).catch(() => {});
 }
 
-/**
- * Mapping of slash-command option values to millisecond durations. Keeping the conversion table
- * local makes it easy to audit which timeout lengths we support without scanning Discord's docs.
- */
-const TIMEOUT_DURATIONS = {
-  '5m': 5 * 60 * 1000,
-  '10m': 10 * 60 * 1000,
-  '1h': 60 * 60 * 1000,
-  '6h': 6 * 60 * 60 * 1000,
-  '12h': 12 * 60 * 60 * 1000,
-  '1d': 24 * 60 * 60 * 1000,
-  '3d': 3 * 24 * 60 * 60 * 1000,
-  '7d': 7 * 24 * 60 * 60 * 1000,
-};
-
-/**
- * Applies Discord's native timeout feature to a member for a pre-defined duration. The function
- * shares permission checks with the other moderation commands so behaviour is consistent.
- */
 async function handleTimeout(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -721,11 +393,6 @@ async function handleTimeout(interaction) {
   await member.user.send(`You have been timed out in **${interaction.guild.name}** for ${durationKey}. Reason: ${reason}`).catch(() => {});
 }
 
-/**
- * Removes a small number of recent messages (optionally filtered by author) using Discord's bulk
- * deletion API. This is designed for quick cleanup jobs where the messages are recent enough to be
- * purged in a single request.
- */
 async function handlePurge(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -757,11 +424,6 @@ async function handlePurge(interaction) {
   await interaction.editReply(`🧹 Deleted ${deleted.size} message(s)${scope}.`);
 }
 
-/**
- * Iteratively clears up to 200 messages from a channel, gracefully degrading to manual deletions for
- * messages older than 14 days. The implementation favours predictable progress reporting so
- * moderators understand what happened.
- */
 async function handleClearChat(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -898,10 +560,6 @@ async function handleClearChat(interaction) {
   await interaction.editReply(`🧼 Deleted ${deletedCount} message(s).${suffix}${short}`);
 }
 
-/**
- * Sends a DM warning to a member and records the action to the logs. Because DMs can fail (user has
- * DMs disabled) we surface the result back to the moderator.
- */
 async function handleWarn(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -929,10 +587,6 @@ async function handleWarn(interaction) {
   await interaction.editReply(`⚠️ Warned ${user.tag}.${dmResult ? ' They were notified via DM.' : ' I could not DM them.'}`);
 }
 
-/**
- * Grants a temporary link posting permit to a user by inserting a record into the permit cache. The
- * sales module reads these permits to exempt trusted users from automatic deletions.
- */
 async function handlePermit(interaction) {
   if (!interaction.guild) {
     return interaction.reply({ content: 'This command can only be used in servers.', ephemeral: true });
@@ -952,58 +606,20 @@ async function handlePermit(interaction) {
   await interaction.editReply(`✅ ${target} can post links for the next ${minutes} minutes (until ~${expiresIn}).`);
 }
 
-/**
- * Displays Paradise XP stats for the invoking user (or an optional target). The response is concise
- * enough to post in-channel which encourages friendly competition.
- */
-async function handleRank(interaction) {
-  const target = interaction.options.getUser('user') || interaction.user;
-  const stats = await getRankStats(interaction.guildId, target.id);
-
-  if (!stats) {
-    const content = target.id === interaction.user.id
-      ? 'You have not earned any Paradise XP yet. Start chatting to level up!'
-      : `${target} has not earned any Paradise XP yet.`;
-    return interaction.reply({ content, ephemeral: true });
-  }
-
-  const { level, totalXp, xpIntoLevel, xpForNextLevel, xpToNextLevel } = stats;
-  const subject = target.id === interaction.user.id ? 'You are' : `${target} is`;
-  const progress = `${xpIntoLevel}/${xpForNextLevel} XP (${xpToNextLevel} XP to go)`;
-
-  return interaction.reply({
-    content: `${subject} level **${level}** with **${totalXp}** XP. Progress to next level: ${progress}.`,
-  });
-}
-
-/**
- * Primary dispatcher invoked by `interactionCreate`. Each case delegates to the appropriately
- * documented handler above so the switch statement acts as a map between slash command names and
- * business logic.
- */
-async function handleChatCommand(interaction) {
-  switch (interaction.commandName) {
-    case 'setchannel':   await handleSetChannel(interaction);  break;
-    case 'linksteam':    await handleLinkSteam(interaction);   break;
-    case 'unlinksteam':  await handleUnlinkSteam(interaction); break;
-    case 'pingsteam':    await handlePingSteam(interaction);   break;
-    case 'librarysize':  await handleLibrarySize(interaction); break;
-    case 'leaderboard':  await handleLeaderboard(interaction); break;
-    case 'sales':        await handleSalesCmd(interaction);    break;
-    case 'music':        await handleMusicCommand(interaction); break;
-    case 'rank':         await handleRank(interaction);        break;
-    case 'kick':         await handleKick(interaction);        break;
-    case 'ban':          await handleBan(interaction);         break;
-    case 'timeout':      await handleTimeout(interaction);     break;
-    case 'purge':        await handlePurge(interaction);       break;
-    case 'clearchat':    await handleClearChat(interaction);   break;
-    case 'warn':         await handleWarn(interaction);        break;
-    case 'permit':       await handlePermit(interaction);      break;
-  }
-}
+const moderationHandlers = {
+  setchannel: handleSetChannel,
+  leaderboard: handleLeaderboard,
+  sales: handleSalesCmd,
+  kick: handleKick,
+  ban: handleBan,
+  timeout: handleTimeout,
+  purge: handlePurge,
+  clearchat: handleClearChat,
+  warn: handleWarn,
+  permit: handlePermit,
+};
 
 module.exports = {
-  commandBuilders,
-  registerCommandsOnStartup,
-  handleChatCommand,
+  builders: moderationBuilders,
+  handlers: moderationHandlers,
 };
