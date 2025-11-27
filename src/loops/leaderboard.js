@@ -102,6 +102,7 @@ async function refreshLeaderboards() {
 
     const { channel, messageId } = holder;
 
+    // Guild-scoped aggregations rely on idx_user_game_stats_guild_id for efficient grouping.
     const topLife = await dbAll(`SELECT user_id, SUM(playtime_total_min) as m FROM user_game_stats WHERE guild_id=? GROUP BY user_id HAVING m>0 ORDER BY m DESC LIMIT 10`, [gid]);
     const top2w  = await dbAll(`SELECT user_id, SUM(playtime_2w_min) as m FROM user_game_stats WHERE guild_id=? GROUP BY user_id HAVING m>0 ORDER BY m DESC LIMIT 10`, [gid]);
     const topAch = await dbAll(`SELECT user_id, SUM(ach_unlocked) as a FROM user_game_stats WHERE guild_id=? GROUP BY user_id HAVING a>0 ORDER BY a DESC LIMIT 10`, [gid]);

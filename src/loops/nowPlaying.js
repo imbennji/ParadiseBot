@@ -57,6 +57,7 @@ async function monitorNowPlaying() {
       let current = null;
       try { current = await getCurrentGame(steam_id); } catch (e) { log.tag('NOW').warn(`GetPlayerSummaries failed user=${user_id}: ${e?.message}`); }
 
+      // Filtered by guild_id first to align with idx_nowplaying_state_guild_id for fast lookups.
       const states = await dbAll('SELECT appid, name, started_at, last_seen_at, announced FROM nowplaying_state WHERE guild_id=? AND user_id=?', [gid, user_id]);
 
       if (current) {

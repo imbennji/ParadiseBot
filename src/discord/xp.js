@@ -43,6 +43,7 @@ function totalXpForLevel(level) {
  * Retrieves the XP progress row for a guild/user pair.
  */
 async function getXpRow(guildId, userId) {
+  // Guild-first lookup leverages idx_xp_progress_guild_id to keep hot-path reads fast.
   return dbGet('SELECT xp, level, last_message_at FROM xp_progress WHERE guild_id=? AND user_id=?', [guildId, userId]);
 }
 
