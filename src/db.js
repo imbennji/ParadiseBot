@@ -106,6 +106,7 @@ async function initDb() {
       guild_id VARCHAR(32) NOT NULL,
       user_id  VARCHAR(32) NOT NULL,
       appid    INT NOT NULL,
+      name     VARCHAR(191) NULL,
       started_at INT NOT NULL,
       last_seen_at INT NOT NULL,
       announced TINYINT NOT NULL DEFAULT 0,
@@ -182,6 +183,7 @@ async function initDb() {
   `);
 
   await ensureColumn('nowplaying_state', 'announced', 'TINYINT NOT NULL DEFAULT 0');
+  await ensureColumn('nowplaying_state', 'name', 'VARCHAR(191) NULL');
   await ensureColumn('owned_seen', 'seeded', 'TINYINT NOT NULL DEFAULT 0');
 
   t.end();
