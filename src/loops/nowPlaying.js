@@ -57,15 +57,15 @@ async function monitorNowPlaying() {
       let current = null;
       try { current = await getCurrentGame(steam_id); } catch (e) { log.tag('NOW').warn(`GetPlayerSummaries failed user=${user_id}: ${e?.message}`); }
 
-      const states = await dbAll('SELECT appid, started_at, last_seen_at, announced FROM nowplaying_state WHERE guild_id=? AND user_id=?', [gid, user_id]);
+      const states = await dbAll('SELECT appid, name, started_at, last_seen_at, announced FROM nowplaying_state WHERE guild_id=? AND user_id=?', [gid, user_id]);
 
       if (current) {
         const st = states.find(s => s.appid === current.appid);
         if (!st) {
           const seedAnnounced = NOWPLAYING_SEED_ON_FIRST_RUN && states.length === 0;
-          await dbRun('INSERT INTO nowplaying_state (guild_id, user_id, appid, started_at, last_seen_at, announced) VALUES (?, ?, ?, ?, ?, ?)', [gid, user_id, current.appid, now, now, seedAnnounced ? 1 : 0]);
+          await dbRun('INSERT INTO nowplaying_state (guild_id, user_id, appid, name, started_at, last_seen_at, announced) VALUES (?, ?, ?, ?, ?, ?, ?)', [gid, user_id, current.appid, current.name, now, now, seedAnnounced ? 1 : 0]);
         } else {
-          await dbRun('UPDATE nowplaying_state SET last_seen_at=? WHERE guild_id=? AND user_id=? AND appid=?', [now, gid, user_id, current.appid]);
+          await dbRun('UPDATE nowplaying_state SET name=?, last_seen_at=? WHERE guild_id=? AND user_id=? AND appid=?', [current.name, now, gid, user_id, current.appid]);
           if (!st.announced && (now - Number(st.started_at)) >= NOWPLAYING_CONFIRM_SECONDS) {
             const embed = new EmbedBuilder()
               .setColor(STEAM_COLOR)
@@ -85,7 +85,7 @@ async function monitorNowPlaying() {
         if (now - Number(s.last_seen_at) >= NOWPLAYING_IDLE_TIMEOUT_SECONDS) {
           const durationMin = Math.max(0, Math.floor((Number(s.last_seen_at) - Number(s.started_at)) / 60));
           if (s.announced && durationMin >= SESSION_MIN_MINUTES) {
-            const name = await getAppNameCached(s.appid);
+            const name = s.name || await getAppNameCached(s.appid);
             const embed = new EmbedBuilder()
               .setColor(STEAM_COLOR)
               .setTitle(`Session Ended: ${name}`)
