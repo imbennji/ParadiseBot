@@ -27,15 +27,17 @@ async function registerCommandsOnStartup() {
   const payload = commandBuilders.map(c => c.toJSON());
   const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 
-  async function putWithRetry(label, fn) {
+  async function putWithRetry(label, route, body) {
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       try {
-        await fn();
-        log.tag('CMD').info(`${label} commands registered${attempt > 1 ? ` after ${attempt} attempts` : ''}.`);
+        await rest.put(route, { body });
+        log
+          .tag('CMD')
+          .info(`${label}${attempt > 1 ? ` after ${attempt} attempts` : ''}.`);
         return;
       } catch (err) {
         const resp = err?.rawError || err?.response?.data || err?.message || err;
-        log.tag('CMD').error(`${label} registration attempt ${attempt} failed:`, resp);
+        log.tag('CMD').error(`${label} attempt ${attempt} failed:`, resp);
         if (attempt < 3) await sleep(1000 * attempt);
       }
     }
@@ -43,12 +45,18 @@ async function registerCommandsOnStartup() {
 
   try {
     if (DEV_GUILD_ID) {
+      const route = Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DEV_GUILD_ID);
+      log.tag('CMD').info('Clearing guild commands before registration.');
+      await putWithRetry('Guild command purge', route, []);
       log.tag('CMD').info(`Registering ${payload.length} commands → guild ${DEV_GUILD_ID}`);
-      await putWithRetry('Guild', () => rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DEV_GUILD_ID), { body: payload }));
+      await putWithRetry('Guild commands registered', route, payload);
       log.tag('CMD').info('DEV_GUILD_ID set; skipping global registration to avoid duplicate commands.');
     } else {
+      const route = Routes.applicationCommands(DISCORD_CLIENT_ID);
+      log.tag('CMD').info('Clearing global commands before registration.');
+      await putWithRetry('Global command purge', route, []);
       log.tag('CMD').info(`Registering ${payload.length} commands → GLOBAL`);
-      await putWithRetry('Global', () => rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: payload }));
+      await putWithRetry('Global commands registered', route, payload);
     }
   } catch (err) {
     log.tag('CMD').error('Registration failed:', err?.stack || err);
