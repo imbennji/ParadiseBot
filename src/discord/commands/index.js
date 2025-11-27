@@ -45,10 +45,11 @@ async function registerCommandsOnStartup() {
     if (DEV_GUILD_ID) {
       log.tag('CMD').info(`Registering ${payload.length} commands → guild ${DEV_GUILD_ID}`);
       await putWithRetry('Guild', () => rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DEV_GUILD_ID), { body: payload }));
+      log.tag('CMD').info('DEV_GUILD_ID set; skipping global registration to avoid duplicate commands.');
+    } else {
+      log.tag('CMD').info(`Registering ${payload.length} commands → GLOBAL`);
+      await putWithRetry('Global', () => rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: payload }));
     }
-
-    log.tag('CMD').info(`Registering ${payload.length} commands → GLOBAL`);
-    await putWithRetry('Global', () => rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: payload }));
   } catch (err) {
     log.tag('CMD').error('Registration failed:', err?.stack || err);
   } finally { t.end(); }
