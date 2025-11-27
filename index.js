@@ -26,6 +26,13 @@ const {
   DEBUG_LEVEL,
   redact,
 } = require('./src/logger');
+let config;
+try {
+  config = require('./src/config');
+} catch (err) {
+  log.tag('BOOT').error('Configuration failed:', err?.stack || err);
+  process.exit(1);
+}
 const {
   DISCORD_TOKEN,
   SALES_REGION_CC,
@@ -54,7 +61,7 @@ const {
   GITHUB_POLL_MS,
   GITHUB_ANNOUNCE_ON_START,
   GITHUB_MAX_CATCHUP,
-} = require('./src/config');
+} = config;
 const { client } = require('./src/discord/client');
 const { registerCommandsOnStartup, handleChatCommand } = require('./src/discord/commands');
 const { registerLogging } = require('./src/discord/logging');

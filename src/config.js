@@ -6,15 +6,33 @@
  */
 const { log } = require('./logger');
 
+class ConfigError extends Error {
+  constructor(missingKeys) {
+    super(`Missing required environment variables: ${missingKeys.join(', ')}`);
+    this.name = 'ConfigError';
+    this.missingKeys = missingKeys;
+  }
+}
+
 const DISCORD_TOKEN     = process.env.DISCORD_TOKEN;
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const STEAM_API_KEY     = process.env.STEAM_API_KEY;
 const DEV_GUILD_ID      = process.env.DEV_GUILD_ID || null;
 
-if (!DISCORD_TOKEN || !DISCORD_CLIENT_ID || !STEAM_API_KEY) {
-  log.error('[FATAL] Missing .env: DISCORD_TOKEN, DISCORD_CLIENT_ID, STEAM_API_KEY');
-  process.exit(1);
+function validateEnv() {
+  const missing = [];
+  if (!DISCORD_TOKEN) missing.push('DISCORD_TOKEN');
+  if (!DISCORD_CLIENT_ID) missing.push('DISCORD_CLIENT_ID');
+  if (!STEAM_API_KEY) missing.push('STEAM_API_KEY');
+
+  if (missing.length) {
+    const err = new ConfigError(missing);
+    log.error(`[FATAL] ${err.message}`);
+    throw err;
+  }
 }
+
+validateEnv();
 
 /**
  * Database connection parameters that are passed directly to `mysql2`. The defaults make local
@@ -201,4 +219,6 @@ module.exports = {
   GITHUB_WEBHOOK_PORT,
   GITHUB_WEBHOOK_PATH,
   GITHUB_WEBHOOK_SECRET,
+  ConfigError,
+  validateEnv,
 };
