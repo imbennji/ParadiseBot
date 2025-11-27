@@ -299,16 +299,30 @@ function formatBytes(bytes) {
 async function registerCommandsOnStartup() {
   const t = time('CMD:register');
   const payload = commandBuilders.map(c => c.toJSON());
+  const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
+  async function putWithRetry(label, fn) {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await fn();
+        log.tag('CMD').info(`${label} commands registered${attempt > 1 ? ` after ${attempt} attempts` : ''}.`);
+        return;
+      } catch (err) {
+        const resp = err?.rawError || err?.response?.data || err?.message || err;
+        log.tag('CMD').error(`${label} registration attempt ${attempt} failed:`, resp);
+        if (attempt < 3) await sleep(1000 * attempt);
+      }
+    }
+  }
+
   try {
     if (DEV_GUILD_ID) {
       log.tag('CMD').info(`Registering ${payload.length} commands → guild ${DEV_GUILD_ID}`);
-      await rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DEV_GUILD_ID), { body: payload });
-      log.tag('CMD').info('Guild commands registered.');
+      await putWithRetry('Guild', () => rest.put(Routes.applicationGuildCommands(DISCORD_CLIENT_ID, DEV_GUILD_ID), { body: payload }));
     }
 
     log.tag('CMD').info(`Registering ${payload.length} commands → GLOBAL`);
-    await rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: payload });
-    log.tag('CMD').info('Global commands registered (may take a bit to propagate).');
+    await putWithRetry('Global', () => rest.put(Routes.applicationCommands(DISCORD_CLIENT_ID), { body: payload }));
   } catch (err) {
     log.tag('CMD').error('Registration failed:', err?.stack || err);
   } finally { t.end(); }
