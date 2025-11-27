@@ -113,6 +113,7 @@ async function initDb() {
       PRIMARY KEY (guild_id, user_id, appid)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+  await dbRun('CREATE INDEX IF NOT EXISTS idx_nowplaying_state_guild_id ON nowplaying_state (guild_id)');
   await dbRun(`
     CREATE TABLE IF NOT EXISTS owned_presence (
       guild_id VARCHAR(32) NOT NULL,
@@ -136,6 +137,7 @@ async function initDb() {
       PRIMARY KEY (guild_id, user_id, appid)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+  await dbRun('CREATE INDEX IF NOT EXISTS idx_user_game_stats_guild_id ON user_game_stats (guild_id)');
   await dbRun(`
     CREATE TABLE IF NOT EXISTS leaderboard_msgs (
       guild_id   VARCHAR(32) NOT NULL PRIMARY KEY,
@@ -181,6 +183,7 @@ async function initDb() {
       PRIMARY KEY (guild_id, user_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
+  await dbRun('CREATE INDEX IF NOT EXISTS idx_xp_progress_guild_id ON xp_progress (guild_id)');
 
   await ensureColumn('nowplaying_state', 'announced', 'TINYINT NOT NULL DEFAULT 0');
   await ensureColumn('nowplaying_state', 'name', 'VARCHAR(191) NULL');
