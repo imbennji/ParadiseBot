@@ -61,6 +61,7 @@ async function monitorNowPlaying() {
       const states = await dbAll('SELECT appid, name, started_at, last_seen_at, announced FROM nowplaying_state WHERE guild_id=? AND user_id=?', [gid, user_id]);
 
       if (current) {
+        current.name = await preferRealAppName(current.appid, current.name);
         const st = states.find(s => s.appid === current.appid);
         if (!st) {
           const seedAnnounced = NOWPLAYING_SEED_ON_FIRST_RUN && states.length === 0;
@@ -86,7 +87,7 @@ async function monitorNowPlaying() {
         if (now - Number(s.last_seen_at) >= NOWPLAYING_IDLE_TIMEOUT_SECONDS) {
           const durationMin = Math.max(0, Math.floor((Number(s.last_seen_at) - Number(s.started_at)) / 60));
           if (s.announced && durationMin >= SESSION_MIN_MINUTES) {
-            const name = s.name || await getAppNameCached(s.appid);
+            const name = await preferRealAppName(s.appid, s.name);
             const embed = new EmbedBuilder()
               .setColor(STEAM_COLOR)
               .setTitle(`Session Ended: ${name}`)
@@ -107,3 +108,18 @@ module.exports = {
   scheduleNowPlayingLoop,
   monitorNowPlaying,
 };
+
+function isPlaceholderName(name, appid) {
+  if (!name || !String(name).trim()) return true;
+  const normalized = String(name).trim();
+  if (normalized === `App ${appid}`) return true;
+  if (/^ValveTestApp\d+$/i.test(normalized)) return true;
+  return false;
+}
+
+async function preferRealAppName(appid, name) {
+  if (!isPlaceholderName(name, appid)) return name;
+  const cached = await getAppNameCached(appid);
+  if (!isPlaceholderName(cached, appid)) return cached;
+  return name || `App ${appid}`;
+}
