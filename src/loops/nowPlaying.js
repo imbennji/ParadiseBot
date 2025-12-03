@@ -118,8 +118,11 @@ function isPlaceholderName(name, appid) {
 }
 
 async function preferRealAppName(appid, name) {
-  if (!isPlaceholderName(name, appid)) return name;
-  const cached = await getAppNameCached(appid);
-  if (!isPlaceholderName(cached, appid)) return cached;
+  const placeholder = isPlaceholderName(name, appid);
+  const cached = await getAppNameCached(appid, { refreshIfPlaceholder: placeholder });
+  const cachedUsable = cached && !isPlaceholderName(cached, appid);
+
+  if (cachedUsable && (placeholder || cached !== name)) return cached;
+  if (!placeholder) return name;
   return name || `App ${appid}`;
 }

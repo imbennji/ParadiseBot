@@ -12,6 +12,8 @@ const {
   RARITY_TTL_MS,
 } = require('../config');
 
+const PLACEHOLDER_REFRESH_MS = 24 * 60 * 60 * 1000;
+
 const STEAM_API = log.tag('STEAM');
 
 /**
@@ -112,10 +114,45 @@ async function getPlayerAchievements(steamId, appid) {
   return list.map(a => ({ apiName: a.apiname, achieved: a.achieved === 1, unlocktime: a.unlocktime || 0 }));
 }
 
-/** Returns the app name when it exists in the cached schema; otherwise falls back to a placeholder. */
-async function getAppNameCached(appid) {
-  const s = await getSchemaFromCache(appid);
-  if (s?.gameName || s?.game?.gameName) return s.gameName || s.game?.gameName;
+function isAppNamePlaceholder(name, appid) {
+  if (!name || !String(name).trim()) return true;
+  const normalized = String(name).trim();
+  if (normalized === `App ${appid}`) return true;
+  if (/^ValveTestApp\d+$/i.test(normalized)) return true;
+  return false;
+}
+
+/**
+ * Returns the app name when it exists in the cached schema; optionally refreshes when the cache is
+ * missing, placeholder-like, or old so embeds can recover from stale schema entries.
+ */
+async function getAppNameCached(appid, { refreshIfPlaceholder = false } = {}) {
+  const row = await dbGet('SELECT payload, fetched_at FROM app_schema WHERE appid = ?', [appid]);
+
+  let cachedName = null;
+  let fetchedAt = null;
+  if (row) {
+    fetchedAt = Number(row.fetched_at) || null;
+    try {
+      const parsed = JSON.parse(row.payload);
+      cachedName = parsed?.gameName || parsed?.game?.gameName || null;
+    } catch (err) {
+      STEAM_API.debug(`schema cache parse failed appid=${appid}: ${err?.message || err}`);
+    }
+  }
+
+  const cacheAge = fetchedAt ? Date.now() - fetchedAt : null;
+  const refreshNeeded = !row
+    || (refreshIfPlaceholder && isAppNamePlaceholder(cachedName, appid))
+    || (refreshIfPlaceholder && cacheAge !== null && cacheAge > PLACEHOLDER_REFRESH_MS);
+
+  if (refreshNeeded) {
+    const { schema } = await fetchSchema(appid);
+    const freshName = schema?.gameName || schema?.game?.gameName;
+    if (freshName && !isAppNamePlaceholder(freshName, appid)) return freshName;
+  }
+
+  if (cachedName) return cachedName;
   return `App ${appid}`;
 }
 
