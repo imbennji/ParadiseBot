@@ -14,7 +14,6 @@ const {
 
 const PLACEHOLDER_REFRESH_MS = 24 * 60 * 60 * 1000;
 const APP_NAME_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const SOURCE_PRIORITY = { store: 3, schema: 2, observed: 1 };
 
 const STEAM_API = log.tag('STEAM');
 
@@ -136,24 +135,12 @@ function isAppNamePlaceholder(name, appid) {
   return false;
 }
 
-function shouldReplaceCachedName(current, candidateSource, fetchedAt) {
-  if (!current) return true;
-  const candidateRank = SOURCE_PRIORITY[candidateSource] || 0;
-  const currentRank = SOURCE_PRIORITY[current.source] || 0;
-  if (candidateRank > currentRank) return true;
-  if (candidateRank < currentRank) return false;
-  const currentFetched = Number(current.fetched_at) || 0;
-  return fetchedAt >= currentFetched;
-}
-
-async function cacheAppName(appid, name, source, { fetchedAt = Date.now() } = {}) {
+async function cacheAppName(appid, name, source) {
   if (!name || isAppNamePlaceholder(name, appid)) return;
   try {
-    const current = await dbGet('SELECT name, source, fetched_at FROM app_names WHERE appid = ?', [appid]);
-    if (!shouldReplaceCachedName(current, source, fetchedAt)) return;
     await dbRun(
       'INSERT INTO app_names (appid, name, source, fetched_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), source=VALUES(source), fetched_at=VALUES(fetched_at)',
-      [appid, name, source, fetchedAt]
+      [appid, name, source, Date.now()]
     );
   } catch (err) {
     STEAM_API.debug(`cache app name failed appid=${appid}: ${err?.message || err}`);
@@ -161,35 +148,13 @@ async function cacheAppName(appid, name, source, { fetchedAt = Date.now() } = {}
 }
 
 async function getCachedAppName(appid) {
-  const row = await dbGet('SELECT name, source, fetched_at FROM app_names WHERE appid = ?', [appid]);
-  if (!row) return { name: null, stale: false, source: null };
+  const row = await dbGet('SELECT name, fetched_at FROM app_names WHERE appid = ?', [appid]);
+  if (!row) return { name: null, stale: false };
   const fetchedAt = Number(row.fetched_at) || 0;
   const stale = Date.now() - fetchedAt > APP_NAME_TTL_MS;
   const name = row.name || null;
-  if (!name || isAppNamePlaceholder(name, appid)) return { name: null, stale, source: row.source || null };
-  return { name, stale, source: row.source || null, fetchedAt };
-}
-
-async function cacheObservedAppNames(games, source) {
-  if (!Array.isArray(games) || !games.length) return;
-  const now = Date.now();
-  await Promise.allSettled(games.map(g => cacheAppName(g.appid, g.name, source, { fetchedAt: now })));
-}
-
-async function getSchemaNameFromCache(appid) {
-  const row = await dbGet('SELECT payload, fetched_at FROM app_schema WHERE appid = ?', [appid]);
-  if (!row) return { name: null, fetchedAt: null, stale: false, placeholder: false };
-  let parsed = null;
-  try {
-    parsed = JSON.parse(row.payload);
-  } catch (err) {
-    STEAM_API.debug(`schema cache parse failed appid=${appid}: ${err?.message || err}`);
-  }
-  const name = parsed?.gameName || parsed?.game?.gameName || null;
-  const fetchedAt = Number(row.fetched_at) || null;
-  const placeholder = isAppNamePlaceholder(name, appid);
-  const stale = fetchedAt ? Date.now() - fetchedAt > SCHEMA_TTL_MS : false;
-  return { name: placeholder ? null : name, fetchedAt, stale, placeholder };
+  if (!name || isAppNamePlaceholder(name, appid)) return { name: null, stale };
+  return { name, stale };
 }
 
 async function fetchAppNameFromStore(appid) {
@@ -218,27 +183,39 @@ async function fetchAppNameFromStore(appid) {
  * Returns the app name when it exists in the cached schema; optionally refreshes when the cache is
  * missing, placeholder-like, or old so embeds can recover from stale schema entries.
  */
-async function getAppNameCached(appid, { refreshIfPlaceholder = false, fallbackName = null } = {}) {
-  const cached = await getCachedAppName(appid);
-  if (cached.name && !cached.stale) return cached.name;
+async function getAppNameCached(appid, { refreshIfPlaceholder = false } = {}) {
+  const { name: cachedStoreName, stale: storeStale } = await getCachedAppName(appid);
+  if (cachedStoreName && !storeStale) return cachedStoreName;
 
-  const schemaCached = await getSchemaNameFromCache(appid);
-  const wantsSchemaRefresh =
-    refreshIfPlaceholder &&
-    (schemaCached.placeholder || (schemaCached.fetchedAt && Date.now() - schemaCached.fetchedAt > PLACEHOLDER_REFRESH_MS));
+  const row = await dbGet('SELECT payload, fetched_at FROM app_schema WHERE appid = ?', [appid]);
 
-  const shouldTryStore = !cached.name || cached.stale || refreshIfPlaceholder;
-  if (shouldTryStore) {
+  let cachedSchemaName = null;
+  let fetchedAt = null;
+  if (row) {
+    fetchedAt = Number(row.fetched_at) || null;
+    try {
+      const parsed = JSON.parse(row.payload);
+      cachedSchemaName = parsed?.gameName || parsed?.game?.gameName || null;
+    } catch (err) {
+      STEAM_API.debug(`schema cache parse failed appid=${appid}: ${err?.message || err}`);
+    }
+  }
+
+  const cacheAge = fetchedAt ? Date.now() - fetchedAt : null;
+  const schemaPlaceholder = isAppNamePlaceholder(cachedSchemaName, appid);
+  const refreshSchema = refreshIfPlaceholder && (schemaPlaceholder || (cacheAge !== null && cacheAge > PLACEHOLDER_REFRESH_MS));
+
+  if (!cachedStoreName || storeStale || (refreshIfPlaceholder && isAppNamePlaceholder(cachedStoreName, appid))) {
     const storeName = await fetchAppNameFromStore(appid);
     if (storeName) return storeName;
   }
 
-  if (schemaCached.name) {
-    await cacheAppName(appid, schemaCached.name, 'schema', { fetchedAt: schemaCached.fetchedAt || Date.now() });
-    return schemaCached.name;
+  if (cachedSchemaName && !schemaPlaceholder) {
+    await cacheAppName(appid, cachedSchemaName, 'schema');
+    return cachedSchemaName;
   }
 
-  if (wantsSchemaRefresh) {
+  if (refreshSchema) {
     const { schema } = await fetchSchema(appid);
     const freshName = schema?.gameName || schema?.game?.gameName;
     if (freshName && !isAppNamePlaceholder(freshName, appid)) {
@@ -247,13 +224,7 @@ async function getAppNameCached(appid, { refreshIfPlaceholder = false, fallbackN
     }
   }
 
-  if (cached.name) return cached.name;
-
-  if (fallbackName && !isAppNamePlaceholder(fallbackName, appid)) {
-    await cacheAppName(appid, fallbackName, 'observed');
-    return fallbackName;
-  }
-
+  if (cachedStoreName) return cachedStoreName;
   return `App ${appid}`;
 }
 
