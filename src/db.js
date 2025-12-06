@@ -65,6 +65,14 @@ async function initDb() {
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
   `);
   await dbRun(`
+    CREATE TABLE IF NOT EXISTS app_names (
+      appid      INT NOT NULL PRIMARY KEY,
+      name       VARCHAR(255) NOT NULL,
+      source     VARCHAR(32) NOT NULL,
+      fetched_at BIGINT NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+  `);
+  await dbRun(`
     CREATE TABLE IF NOT EXISTS owned_seen (
       guild_id   VARCHAR(32) NOT NULL,
       user_id    VARCHAR(32) NOT NULL,

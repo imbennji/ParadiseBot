@@ -13,6 +13,7 @@ const {
 } = require('../config');
 
 const PLACEHOLDER_REFRESH_MS = 24 * 60 * 60 * 1000;
+const APP_NAME_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const STEAM_API = log.tag('STEAM');
 
@@ -122,37 +123,96 @@ function isAppNamePlaceholder(name, appid) {
   return false;
 }
 
+async function cacheAppName(appid, name, source) {
+  if (!name || isAppNamePlaceholder(name, appid)) return;
+  try {
+    await dbRun(
+      'INSERT INTO app_names (appid, name, source, fetched_at) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE name=VALUES(name), source=VALUES(source), fetched_at=VALUES(fetched_at)',
+      [appid, name, source, Date.now()]
+    );
+  } catch (err) {
+    STEAM_API.debug(`cache app name failed appid=${appid}: ${err?.message || err}`);
+  }
+}
+
+async function getCachedAppName(appid) {
+  const row = await dbGet('SELECT name, fetched_at FROM app_names WHERE appid = ?', [appid]);
+  if (!row) return { name: null, stale: false };
+  const fetchedAt = Number(row.fetched_at) || 0;
+  const stale = Date.now() - fetchedAt > APP_NAME_TTL_MS;
+  const name = row.name || null;
+  if (!name || isAppNamePlaceholder(name, appid)) return { name: null, stale };
+  return { name, stale };
+}
+
+async function fetchAppNameFromStore(appid) {
+  try {
+    const t = time('HTTP:StoreAppDetails');
+    const { data } = await axios.get('https://store.steampowered.com/api/appdetails', {
+      params: { appids: appid, l: 'en' },
+      timeout: 15000,
+    });
+    t.end();
+
+    const payload = data?.[appid];
+    if (!payload || payload.success === false) return null;
+    const name = payload?.data?.name || payload?.data?.common?.name || null;
+    if (name && !isAppNamePlaceholder(name, appid)) {
+      await cacheAppName(appid, name, 'store');
+      return name;
+    }
+  } catch (err) {
+    STEAM_API.debug(`store appdetails failed appid=${appid}: ${err?.message || err}`);
+  }
+  return null;
+}
+
 /**
  * Returns the app name when it exists in the cached schema; optionally refreshes when the cache is
  * missing, placeholder-like, or old so embeds can recover from stale schema entries.
  */
 async function getAppNameCached(appid, { refreshIfPlaceholder = false } = {}) {
+  const { name: cachedStoreName, stale: storeStale } = await getCachedAppName(appid);
+  if (cachedStoreName && !storeStale) return cachedStoreName;
+
   const row = await dbGet('SELECT payload, fetched_at FROM app_schema WHERE appid = ?', [appid]);
 
-  let cachedName = null;
+  let cachedSchemaName = null;
   let fetchedAt = null;
   if (row) {
     fetchedAt = Number(row.fetched_at) || null;
     try {
       const parsed = JSON.parse(row.payload);
-      cachedName = parsed?.gameName || parsed?.game?.gameName || null;
+      cachedSchemaName = parsed?.gameName || parsed?.game?.gameName || null;
     } catch (err) {
       STEAM_API.debug(`schema cache parse failed appid=${appid}: ${err?.message || err}`);
     }
   }
 
   const cacheAge = fetchedAt ? Date.now() - fetchedAt : null;
-  const refreshNeeded = !row
-    || (refreshIfPlaceholder && isAppNamePlaceholder(cachedName, appid))
-    || (refreshIfPlaceholder && cacheAge !== null && cacheAge > PLACEHOLDER_REFRESH_MS);
+  const schemaPlaceholder = isAppNamePlaceholder(cachedSchemaName, appid);
+  const refreshSchema = refreshIfPlaceholder && (schemaPlaceholder || (cacheAge !== null && cacheAge > PLACEHOLDER_REFRESH_MS));
 
-  if (refreshNeeded) {
-    const { schema } = await fetchSchema(appid);
-    const freshName = schema?.gameName || schema?.game?.gameName;
-    if (freshName && !isAppNamePlaceholder(freshName, appid)) return freshName;
+  if (!cachedStoreName || storeStale || (refreshIfPlaceholder && isAppNamePlaceholder(cachedStoreName, appid))) {
+    const storeName = await fetchAppNameFromStore(appid);
+    if (storeName) return storeName;
   }
 
-  if (cachedName) return cachedName;
+  if (cachedSchemaName && !schemaPlaceholder) {
+    await cacheAppName(appid, cachedSchemaName, 'schema');
+    return cachedSchemaName;
+  }
+
+  if (refreshSchema) {
+    const { schema } = await fetchSchema(appid);
+    const freshName = schema?.gameName || schema?.game?.gameName;
+    if (freshName && !isAppNamePlaceholder(freshName, appid)) {
+      await cacheAppName(appid, freshName, 'schema');
+      return freshName;
+    }
+  }
+
+  if (cachedStoreName) return cachedStoreName;
   return `App ${appid}`;
 }
 
