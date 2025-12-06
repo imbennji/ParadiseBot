@@ -52,7 +52,14 @@ async function getRecentlyPlayed(steamId) {
   t.end();
   const games = data?.response?.games || [];
   STEAM_API.debug(`recentlyPlayed steam=${steamId} -> ${games.length} games`);
-  return games.map(g => ({ appid: g.appid, name: g.name, playtime_2weeks: g.playtime_2weeks || 0, playtime_forever: g.playtime_forever || 0 }));
+  const normalized = games.map(g => ({
+    appid: g.appid,
+    name: g.name,
+    playtime_2weeks: g.playtime_2weeks || 0,
+    playtime_forever: g.playtime_forever || 0,
+  }));
+  await cacheObservedAppNames(normalized, 'recently_played');
+  return normalized;
 }
 
 /** Fetches the current game (if any) a user is playing. */
@@ -62,7 +69,12 @@ async function getCurrentGame(steamId) {
   const { data } = await axios.get(url, { timeout: 10000 });
   t.end();
   const p = data?.response?.players?.[0];
-  if (p?.gameid) return { appid: Number(p.gameid), name: p.gameextrainfo || `App ${p.gameid}` };
+  if (p?.gameid) {
+    const appid = Number(p.gameid);
+    const name = p.gameextrainfo || `App ${p.gameid}`;
+    await cacheAppName(appid, name, 'observed');
+    return { appid, name };
+  }
   return null;
 }
 
@@ -261,12 +273,14 @@ async function getOwnedGames(steamId) {
   } else {
     log.tag('STEAM').debug(`ownedGames steam=${steamId} -> ${games.length} games`);
   }
-  return games.map(g => ({
+  const normalized = games.map(g => ({
     appid: g.appid,
     name: g.name,
     img_icon_url: g.img_icon_url || null,
     playtime_forever: g.playtime_forever || 0
   }));
+  await cacheObservedAppNames(normalized, 'owned');
+  return normalized;
 }
 
 /**
