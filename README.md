@@ -123,6 +123,7 @@ All configuration is sourced from environment variables. Highlights:
 | GitHub announcer | `GITHUB_ANNOUNCER_ENABLED`, `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_BRANCH`, `GITHUB_TOKEN`, `GITHUB_POLL_SECONDS`, `GITHUB_MAX_CATCHUP`, `GITHUB_ANNOUNCE_ON_START`, `GITHUB_EMBED_COLOR`, `GITHUB_WEBHOOK_ENABLED`, `GITHUB_WEBHOOK_PORT`, `GITHUB_WEBHOOK_PATH`, `GITHUB_WEBHOOK_SECRET` | Toggle polling/webhooks and point at the repository to mirror. Optional token boosts rate limits and enables private repo access. |
 | Moderation | `MODERATION_BANNED_TERMS` | Comma-separated list of extra phrases to block in addition to the default hate-speech list. |
 | Logging | `DEBUG_LEVEL`, `DEBUG_HTTP`, `DEBUG_SQL`, `STEAM_EMBED_COLOR` | Adjust log verbosity and embed colours; HTTP/SQL tracing aids debugging. |
+| Steam naming overrides | `APP_NAME_OVERRIDES` | Comma-separated `appid=Name` pairs to force specific titles when Steam returns placeholders or incorrect codenames. |
 
 Restart the process after changing `.env`; configuration is read at boot.
 

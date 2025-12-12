@@ -10,6 +10,7 @@ const {
   STEAM_API_KEY,
   SCHEMA_TTL_MS,
   RARITY_TTL_MS,
+  APP_NAME_OVERRIDES,
 } = require('../config');
 
 const PLACEHOLDER_REFRESH_MS = 24 * 60 * 60 * 1000;
@@ -184,6 +185,9 @@ async function fetchAppNameFromStore(appid) {
  * missing, placeholder-like, or old so embeds can recover from stale schema entries.
  */
 async function getAppNameCached(appid, { refreshIfPlaceholder = false } = {}) {
+  const override = APP_NAME_OVERRIDES?.[appid];
+  if (override) return override;
+
   const { name: cachedStoreName, stale: storeStale } = await getCachedAppName(appid);
   if (cachedStoreName && !storeStale) return cachedStoreName;
 

@@ -19,6 +19,8 @@ const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID;
 const STEAM_API_KEY     = process.env.STEAM_API_KEY;
 const DEV_GUILD_ID      = process.env.DEV_GUILD_ID || null;
 
+const CONFIG_LOG = log.tag('CONFIG');
+
 function validateEnv() {
   const missing = [];
   if (!DISCORD_TOKEN) missing.push('DISCORD_TOKEN');
@@ -51,6 +53,7 @@ const DB_CFG = {
 };
 
 const STEAM_HOST = 'https://api.steampowered.com';
+const APP_NAME_OVERRIDES = parseAppNameOverrides(process.env.APP_NAME_OVERRIDES);
 
 // GitHub integration settings, used by the announcer and webhook server to mirror repository
 // activity into Discord. Each value is normalised to a predictable type (boolean, number, etc.).
@@ -118,6 +121,29 @@ function parseColor(input, fallbackInt) {
 }
 const STEAM_COLOR = parseColor(process.env.STEAM_EMBED_COLOR || '#171A21', 0x171A21);
 
+/**
+ * Allows environment-defined overrides for app names that are known to be wrong or placeholder-like
+ * in Steam responses. Accepts a comma-separated list of `appid=Custom Name` pairs.
+ */
+function parseAppNameOverrides(raw) {
+  if (!raw) return {};
+  return raw
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .reduce((acc, entry) => {
+      const [appidRaw, ...nameParts] = entry.split('=');
+      const appid = Number.parseInt(appidRaw, 10);
+      const name = nameParts.join('=').trim();
+      if (!Number.isFinite(appid) || !name) {
+        CONFIG_LOG.warn(`Ignoring APP_NAME_OVERRIDES entry "${entry}" (expected appid=Name)`);
+        return acc;
+      }
+      acc[appid] = name;
+      return acc;
+    }, {});
+}
+
 const SALES_REGION_CC = process.env.SALES_REGION_CC || 'US';
 const SALES_PAGE_SIZE = Math.max(5, parseInt(process.env.SALES_PAGE_SIZE || '10', 10));
 const SALES_PRECACHE_PAGES = Math.max(0, parseInt(process.env.SALES_PRECACHE_PAGES || '10', 10));
@@ -170,6 +196,7 @@ module.exports = {
   DB_CFG,
   STEAM_HOST,
   STEAM_COLOR,
+  APP_NAME_OVERRIDES,
   SALES_REGION_CC,
   SALES_PAGE_SIZE,
   SALES_PRECACHE_PAGES,
